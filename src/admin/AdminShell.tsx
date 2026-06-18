@@ -24,38 +24,81 @@ const NAV_GROUPS = [
 
 export default function AdminShell() {
   const { toasts, confirmState, closeConfirm, requests } = useAdminData();
-  const { logout, sessionWarningOpen, sessionCountdown, staySignedIn } = useAdminAuth();
+  const { logout, sessionWarningOpen, sessionCountdown, staySignedIn, currentUser } = useAdminAuth();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
 
   const pendingCount = Object.values(requests).flat().filter((r) => r.status === 'pending').length;
 
-  function handleLogout() {
+  // Derive display name from email: "editor@cogvana.co.ke" → "Editor"
+  const userEmail = currentUser?.email ?? '';
+  const displayName = currentUser?.displayName
+    ?? (userEmail.split('@')[0] ?? 'Admin')
+        .replace(/[._-]/g, ' ')
+        .replace(/\b\w/g, (c) => c.toUpperCase());
+  const avatarInitials = displayName
+    .split(' ')
+    .slice(0, 2)
+    .map((w: string) => w[0])
+    .join('')
+    .toUpperCase();
+
+  async function handleLogout() {
     setProfileOpen(false);
-    logout();
+    await logout();
     navigate('/admin');
   }
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh' }}>
+      {/* Sidebar overlay (mobile) */}
       <div
         onClick={() => setSidebarOpen(false)}
-        style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 110, opacity: sidebarOpen ? 1 : 0, pointerEvents: sidebarOpen ? 'all' : 'none', transition: 'opacity .25s' }}
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0,0,0,.5)',
+          zIndex: 110,
+          opacity: sidebarOpen ? 1 : 0,
+          pointerEvents: sidebarOpen ? 'all' : 'none',
+          transition: 'opacity .25s',
+        }}
       />
 
       <aside id="sidebar" className={sidebarOpen ? 'open' : ''}>
-        <div style={{ padding: '1.15rem 1.1rem .9rem', borderBottom: '1px solid rgba(247,244,239,.07)' }} className="flex items-center justify-between">
+        <div
+          style={{ padding: '1.15rem 1.1rem .9rem', borderBottom: '1px solid rgba(247,244,239,.07)' }}
+          className="flex items-center justify-between"
+        >
           <div>
-            <span className="font-display" style={{ fontSize: '1.35rem', fontWeight: 900, color: '#fff', letterSpacing: '-.03em' }}>
+            <span
+              className="font-display"
+              style={{ fontSize: '1.35rem', fontWeight: 900, color: '#fff', letterSpacing: '-.03em' }}
+            >
               P&amp;S
             </span>
-            <div style={{ fontSize: '.42rem', letterSpacing: '.26em', color: 'var(--gold)', textTransform: 'uppercase', fontWeight: 600 }}>Editor Dashboard</div>
+            <div
+              style={{
+                fontSize: '.42rem',
+                letterSpacing: '.26em',
+                color: 'var(--gold)',
+                textTransform: 'uppercase',
+                fontWeight: 600,
+              }}
+            >
+              Editor Dashboard
+            </div>
           </div>
-          <button onClick={() => setSidebarOpen(false)} className="md:hidden" style={{ background: 'none', border: 'none', color: 'rgba(247,244,239,.5)', fontSize: '1.2rem', cursor: 'pointer' }}>
+          <button
+            onClick={() => setSidebarOpen(false)}
+            className="md:hidden"
+            style={{ background: 'none', border: 'none', color: 'rgba(247,244,239,.5)', fontSize: '1.2rem', cursor: 'pointer' }}
+          >
             &times;
           </button>
         </div>
+
         <nav style={{ flex: 1, overflowY: 'auto', padding: '.6rem .9rem 1rem' }}>
           {NAV_GROUPS.map((group) => (
             <div key={group.label}>
@@ -71,12 +114,15 @@ export default function AdminShell() {
                     <path d={link.icon} />
                   </svg>
                   {link.label}
-                  {group.label === 'Business' && pendingCount > 0 && <span className="count">{pendingCount}</span>}
+                  {group.label === 'Business' && pendingCount > 0 && (
+                    <span className="count">{pendingCount}</span>
+                  )}
                 </NavLink>
               ))}
             </div>
           ))}
         </nav>
+
         <div style={{ padding: '.9rem 1.1rem', borderTop: '1px solid rgba(247,244,239,.07)' }}>
           <button onClick={handleLogout} className="btn-outline-dark-admin w-full" style={{ fontSize: '.66rem' }}>
             <svg className="icon" viewBox="0 0 24 24" style={{ stroke: 'rgba(247,244,239,.85)' }}>
@@ -91,43 +137,74 @@ export default function AdminShell() {
 
       <div id="mainWrap">
         <header id="topbar">
-          <button onClick={() => setSidebarOpen(true)} className="md:hidden" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '.3rem', display: 'flex' }}>
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="md:hidden"
+            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '.3rem', display: 'flex' }}
+          >
             <svg width="20" height="20" viewBox="0 0 24 24" stroke="#0A0A0A" strokeWidth="2" fill="none" strokeLinecap="round">
               <path d="M3 6h18M3 12h18M3 18h18" />
             </svg>
           </button>
-          <div className="hidden md:flex items-center gap-1.5 ml-auto" style={{ fontSize: '.62rem', color: 'var(--warm-gray)' }} title="Simulated Firebase connection — demo mode">
+
+          <div
+            className="hidden md:flex items-center gap-1.5 ml-auto"
+            style={{ fontSize: '.62rem', color: 'var(--warm-gray)' }}
+            title="Firebase connected"
+          >
             <span className="fb-dot" /> Firebase Connected
           </div>
-          <div style={{ position: 'relative', cursor: 'pointer' }} className="ml-auto md:ml-0" onClick={() => navigate('/admin/business')}>
+
+          <div
+            style={{ position: 'relative', cursor: 'pointer' }}
+            className="ml-auto md:ml-0"
+            onClick={() => navigate('/admin/business')}
+          >
             <svg width="19" height="19" viewBox="0 0 24 24" stroke="#3a3a3a" strokeWidth="1.8" fill="none" strokeLinecap="round">
               <path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
               <path d="M13.7 21a2 2 0 0 1-3.4 0" />
             </svg>
             {pendingCount > 0 && <span className="bell-badge">{pendingCount}</span>}
           </div>
+
           <div style={{ position: 'relative' }}>
-            <button onClick={() => setProfileOpen((v) => !v)} style={{ background: 'none', border: 'none', cursor: 'pointer' }} className="flex items-center gap-2">
-              <div className="avatar">AE</div>
+            <button
+              onClick={() => setProfileOpen((v) => !v)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+              className="flex items-center gap-2"
+            >
+              <div className="avatar">{avatarInitials}</div>
             </button>
             {profileOpen && (
-              <div style={{ position: 'absolute', right: 0, top: 42, background: '#fff', border: '1px solid var(--line)', width: 190, boxShadow: '0 12px 30px rgba(0,0,0,.12)', zIndex: 50 }}>
+              <div
+                style={{
+                  position: 'absolute',
+                  right: 0,
+                  top: 42,
+                  background: '#fff',
+                  border: '1px solid var(--line)',
+                  width: 210,
+                  boxShadow: '0 12px 30px rgba(0,0,0,.12)',
+                  zIndex: 50,
+                }}
+              >
                 <div className="p-3" style={{ borderBottom: '1px solid var(--line)' }}>
-                  <p style={{ fontSize: '.78rem', fontWeight: 600 }}>Amara Editor</p>
-                  <p style={{ fontSize: '.65rem', color: 'var(--warm-gray)' }}>editor@pnsmagazine.com</p>
+                  <p style={{ fontSize: '.78rem', fontWeight: 600 }}>{displayName}</p>
+                  <p style={{ fontSize: '.65rem', color: 'var(--warm-gray)' }}>{userEmail}</p>
                 </div>
                 <div className="p-1.5">
                   <button
-                    onClick={() => {
-                      navigate('/admin/system');
-                      setProfileOpen(false);
-                    }}
+                    onClick={() => { navigate('/admin/system'); setProfileOpen(false); }}
                     className="w-full text-left px-2 py-1.5"
                     style={{ fontSize: '.72rem', background: 'none', border: 'none', cursor: 'pointer' }}
                   >
                     Account Settings
                   </button>
-                  <button onClick={handleLogout} className="w-full text-left px-2 py-1.5" style={{ fontSize: '.72rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger)' }}>
+                  <button
+                    onClick={handleLogout}
+                    className="w-full text-left px-2 py-1.5"
+                    style={{ fontSize: '.72rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--danger)' }}
+                  >
                     Sign Out
                   </button>
                 </div>
@@ -154,7 +231,8 @@ export default function AdminShell() {
               Session expiring soon
             </p>
             <p style={{ fontSize: '.78rem', color: 'var(--warm-gray)', marginTop: '.4rem' }}>
-              For your security, you'll be signed out in <span style={{ fontWeight: 700, color: 'var(--danger)' }}>{sessionCountdown}</span>s due to inactivity.
+              For your security, you'll be signed out in{' '}
+              <span style={{ fontWeight: 700, color: 'var(--danger)' }}>{sessionCountdown}</span>s due to inactivity.
             </p>
           </div>
           <div className="p-4 pt-0">
@@ -193,9 +271,24 @@ export default function AdminShell() {
         </div>
       </div>
 
-      <div style={{ position: 'fixed', bottom: '1.1rem', right: '1.1rem', zIndex: 600, display: 'flex', flexDirection: 'column', gap: '.5rem', maxWidth: 300 }}>
+      {/* TOASTS */}
+      <div
+        style={{
+          position: 'fixed',
+          bottom: '1.1rem',
+          right: '1.1rem',
+          zIndex: 600,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '.5rem',
+          maxWidth: 300,
+        }}
+      >
         {toasts.map((t) => (
-          <div className={`toast ${t.type === 'success' ? 'success' : t.type === 'danger' ? 'danger' : ''}`} key={t.id}>
+          <div
+            className={`toast ${t.type === 'success' ? 'success' : t.type === 'danger' ? 'danger' : ''}`}
+            key={t.id}
+          >
             <span>{t.type === 'success' ? '✦' : t.type === 'danger' ? '⚠' : '●'}</span>
             <span>{t.message}</span>
           </div>

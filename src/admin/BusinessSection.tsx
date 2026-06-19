@@ -16,6 +16,7 @@ import { ICONS, EmptyState } from './icons';
 import { REQUEST_TYPE_LABELS } from './data';
 import { openWhatsApp, cleanPhoneForWhatsApp } from '../lib/fingerprint';
 import type { RequestType, RequestStatus, DealStage, Partner, PartnerStatus, SponsoredDeal } from './types';
+import { ImageUploadField } from './ContentSection';
 
 // ─── Types for Firestore documents ────────────────────────────────────────────
 
@@ -729,6 +730,7 @@ function SponsoredTab() {
 }
 
 // ─── PartnersTab (Firestore-backed) ──────────────────────────────────────────
+// ─── PartnersTab (Firestore-backed) ──────────────────────────────────────────
 
 function PartnersTab() {
   const { openConfirm, showToast, logActivity } = useAdminData();
@@ -736,7 +738,14 @@ function PartnersTab() {
   const [filter, setFilter] = useState<'all' | PartnerStatus>('all');
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: '', category: 'Salon', status: 'pending' as PartnerStatus, email: '', phone: '' });
+  const [form, setForm] = useState({
+    name: '',
+    category: 'Salon',
+    status: 'pending' as PartnerStatus,
+    email: '',
+    phone: '',
+    image: '',
+  });
 
   useEffect(() => {
     const q = query(collection(db, 'partners'), orderBy('createdAt', 'desc'));
@@ -747,13 +756,20 @@ function PartnersTab() {
 
   function openAdd() {
     setEditingId(null);
-    setForm({ name: '', category: 'Salon', status: 'pending', email: '', phone: '' });
+    setForm({ name: '', category: 'Salon', status: 'pending', email: '', phone: '', image: '' });
     setModalOpen(true);
   }
 
   function openEdit(p: FirestoreRequest) {
     setEditingId(p.id);
-    setForm({ name: p.name, category: p.category, status: p.status, email: p.email, phone: p.phone ?? '' });
+    setForm({
+      name: p.name,
+      category: p.category,
+      status: p.status,
+      email: p.email,
+      phone: p.phone ?? '',
+      image: p.image ?? '',
+    });
     setModalOpen(true);
   }
 
@@ -810,9 +826,13 @@ function PartnersTab() {
           return (
             <div className="data-card p-3.5" key={p.id}>
               <div className="flex items-center gap-2.5">
-                <div className="avatar" style={{ background: 'var(--gold-dim)', color: '#9a7a2c', flexShrink: 0 }}>
-                  {(p.name?.[0] ?? '?')}
-                </div>
+                {p.image ? (
+                  <img src={p.image} style={{ width: 38, height: 38, objectFit: 'cover', flexShrink: 0, border: '1px solid var(--line)' }} />
+                ) : (
+                  <div className="avatar" style={{ background: 'var(--gold-dim)', color: '#9a7a2c', flexShrink: 0 }}>
+                    {(p.name?.[0] ?? '?')}
+                  </div>
+                )}
                 <div className="flex-1 min-w-0">
                   <p style={{ fontSize: '.82rem', fontWeight: 700 }} className="truncate">{p.name}</p>
                   <p style={{ fontSize: '.68rem', color: 'var(--warm-gray)' }}>{p.category}</p>
@@ -849,7 +869,6 @@ function PartnersTab() {
         })}
       </div>
 
-      {/* Add/Edit Modal */}
       <div className={`modal-admin ${modalOpen ? 'active' : ''}`}>
         <div className="modal-backdrop-admin" onClick={() => setModalOpen(false)} />
         <div className="modal-box-admin" style={{ maxWidth: 480 }}>
@@ -866,6 +885,13 @@ function PartnersTab() {
             </h2>
           </div>
           <form onSubmit={save} className="space-y-3" style={{ padding: '1.2rem 1.4rem' }}>
+            <ImageUploadField
+              label="Partner Logo / Photo"
+              value={form.image}
+              onChange={(url) => setForm({ ...form, image: url })}
+              folder="partners"
+              previewHeight={110}
+            />
             <div>
               <label className="field-label-admin">Business Name</label>
               <input className="form-input-admin" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
@@ -906,6 +932,183 @@ function PartnersTab() {
     </div>
   );
 }
+
+// function PartnersTab() {
+//   const { openConfirm, showToast, logActivity } = useAdminData();
+//   const [partners, setPartners] = useState<FirestoreRequest[]>([]);
+//   const [filter, setFilter] = useState<'all' | PartnerStatus>('all');
+//   const [modalOpen, setModalOpen] = useState(false);
+//   const [editingId, setEditingId] = useState<string | null>(null);
+//   const [form, setForm] = useState({ name: '', category: 'Salon', status: 'pending' as PartnerStatus, email: '', phone: '' });
+
+//   useEffect(() => {
+//     const q = query(collection(db, 'partners'), orderBy('createdAt', 'desc'));
+//     return onSnapshot(q, (snap) => {
+//       setPartners(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+//     });
+//   }, []);
+
+//   function openAdd() {
+//     setEditingId(null);
+//     setForm({ name: '', category: 'Salon', status: 'pending', email: '', phone: '' });
+//     setModalOpen(true);
+//   }
+
+//   function openEdit(p: FirestoreRequest) {
+//     setEditingId(p.id);
+//     setForm({ name: p.name, category: p.category, status: p.status, email: p.email, phone: p.phone ?? '' });
+//     setModalOpen(true);
+//   }
+
+//   async function save(e: React.FormEvent) {
+//     e.preventDefault();
+//     if (editingId) {
+//       await updateDoc(doc(db, 'partners', editingId), { ...form });
+//       logActivity(`Updated partner: ${form.name}`);
+//       showToast('Partner updated', 'success');
+//     } else {
+//       await addDoc(collection(db, 'partners'), { ...form, createdAt: serverTimestamp() });
+//       logActivity(`Added partner: ${form.name}`);
+//       showToast('Partner added', 'success');
+//     }
+//     setModalOpen(false);
+//   }
+
+//   async function deletePartner(p: FirestoreRequest) {
+//     await deleteDoc(doc(db, 'partners', p.id));
+//     showToast('Partner removed', 'danger');
+//     logActivity(`Removed partner: ${p.name}`);
+//   }
+
+//   async function setPartnerStatus(p: FirestoreRequest, status: PartnerStatus) {
+//     await updateDoc(doc(db, 'partners', p.id), { status });
+//     showToast(`${p.name} ${status === 'active' ? 'reactivated' : 'suspended'}`, status === 'active' ? 'success' : 'danger');
+//     logActivity(`${status === 'active' ? 'Reactivated' : 'Suspended'} partner: ${p.name}`);
+//   }
+
+//   const list = partners.filter((p) => filter === 'all' || p.status === filter);
+
+//   return (
+//     <div>
+//       <div className="page-head">
+//         <div>
+//           <p className="section-eyebrow mb-1">Our Ecosystem</p>
+//           <h1 className="page-title">Partners</h1>
+//         </div>
+//         <button className="btn-gold-admin" onClick={openAdd}>+ Add Partner</button>
+//       </div>
+
+//       <div className="flex gap-2 mb-4 flex-wrap">
+//         {(['all', 'active', 'pending', 'suspended'] as const).map((f) => (
+//           <button key={f} className={`filter-chip ${filter === f ? 'active' : ''}`} onClick={() => setFilter(f)}>
+//             {f === 'all' ? 'All' : f[0].toUpperCase() + f.slice(1)}
+//           </button>
+//         ))}
+//       </div>
+
+//       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+//         {list.length === 0 && <EmptyState message="No partners match this filter." />}
+//         {list.map((p) => {
+//           const statusBadge = { active: 'badge-success', pending: 'badge-warn', suspended: 'badge-danger' }[p.status as PartnerStatus] ?? 'badge-gray';
+//           return (
+//             <div className="data-card p-3.5" key={p.id}>
+//               <div className="flex items-center gap-2.5">
+//                 <div className="avatar" style={{ background: 'var(--gold-dim)', color: '#9a7a2c', flexShrink: 0 }}>
+//                   {(p.name?.[0] ?? '?')}
+//                 </div>
+//                 <div className="flex-1 min-w-0">
+//                   <p style={{ fontSize: '.82rem', fontWeight: 700 }} className="truncate">{p.name}</p>
+//                   <p style={{ fontSize: '.68rem', color: 'var(--warm-gray)' }}>{p.category}</p>
+//                 </div>
+//                 <span className={`badge ${statusBadge}`}>{p.status}</span>
+//               </div>
+//               <p style={{ fontSize: '.68rem', color: 'var(--warm-gray)', marginTop: '.6rem' }}>{p.email}</p>
+//               {p.phone && (
+//                 <p style={{ fontSize: '.68rem', color: 'var(--warm-gray)' }}>📱 {p.phone}</p>
+//               )}
+//               <div className="flex gap-1.5 mt-2.5">
+//                 <button className="btn-icon" title="Edit" onClick={() => openEdit(p)}>{ICONS.edit}</button>
+//                 {p.status !== 'suspended' ? (
+//                   <button className="btn-icon" title="Suspend" onClick={() => setPartnerStatus(p, 'suspended')}>{ICONS.x}</button>
+//                 ) : (
+//                   <button className="btn-icon" title="Reactivate" onClick={() => setPartnerStatus(p, 'active')}>{ICONS.check}</button>
+//                 )}
+//                 <button
+//                   className="btn-icon danger"
+//                   title="Delete"
+//                   onClick={() =>
+//                     openConfirm(
+//                       'Remove this partner?',
+//                       `"${p.name}" will be permanently removed.`,
+//                       () => deletePartner(p)
+//                     )
+//                   }
+//                 >
+//                   {ICONS.trash}
+//                 </button>
+//               </div>
+//             </div>
+//           );
+//         })}
+//       </div>
+
+//       {/* Add/Edit Modal */}
+//       <div className={`modal-admin ${modalOpen ? 'active' : ''}`}>
+//         <div className="modal-backdrop-admin" onClick={() => setModalOpen(false)} />
+//         <div className="modal-box-admin" style={{ maxWidth: 480 }}>
+//           <button
+//             onClick={() => setModalOpen(false)}
+//             style={{ position: 'absolute', top: '.7rem', right: '.7rem', fontSize: '1.3rem', background: 'none', border: 'none', cursor: 'pointer', color: '#999' }}
+//           >
+//             &times;
+//           </button>
+//           <div style={{ padding: '1.2rem 1.4rem .9rem', borderBottom: '1px solid var(--line)' }}>
+//             <p className="section-eyebrow mb-1">{editingId ? 'Edit Entry' : 'New Entry'}</p>
+//             <h2 className="font-display" style={{ fontSize: '1.2rem', fontWeight: 800 }}>
+//               {editingId ? 'Edit Partner' : 'Add Partner'}
+//             </h2>
+//           </div>
+//           <form onSubmit={save} className="space-y-3" style={{ padding: '1.2rem 1.4rem' }}>
+//             <div>
+//               <label className="field-label-admin">Business Name</label>
+//               <input className="form-input-admin" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+//             </div>
+//             <div className="grid grid-cols-2 gap-3">
+//               <div>
+//                 <label className="field-label-admin">Category</label>
+//                 <select className="form-input-admin" value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
+//                   {['Salon','Barber','Fashion Designer','Makeup Artist','Tailor','Hotel','Wedding Planner','Gym / Fitness','Beauty Shop','Print Shop','Other'].map((c) => (
+//                     <option key={c}>{c}</option>
+//                   ))}
+//                 </select>
+//               </div>
+//               <div>
+//                 <label className="field-label-admin">Status</label>
+//                 <select className="form-input-admin" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as PartnerStatus })}>
+//                   <option value="active">Active</option>
+//                   <option value="pending">Pending</option>
+//                   <option value="suspended">Suspended</option>
+//                 </select>
+//               </div>
+//             </div>
+//             <div>
+//               <label className="field-label-admin">Contact Email</label>
+//               <input type="email" className="form-input-admin" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+//             </div>
+//             <div>
+//               <label className="field-label-admin">Phone / WhatsApp</label>
+//               <input type="tel" className="form-input-admin" placeholder="0712 345 678" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+//             </div>
+//             <div className="flex gap-2 justify-end" style={{ marginTop: '.6rem' }}>
+//               <button type="button" className="btn-outline-admin" onClick={() => setModalOpen(false)}>Cancel</button>
+//               <button type="submit" className="btn-gold-admin">Save Partner</button>
+//             </div>
+//           </form>
+//         </div>
+//       </div>
+//     </div>
+//   );
+// }
 
 // ─── Root export ──────────────────────────────────────────────────────────────
 

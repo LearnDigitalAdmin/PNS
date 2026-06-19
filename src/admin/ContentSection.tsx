@@ -3,8 +3,9 @@ import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { storage } from '../lib/firebase';
 import { useAdminData } from './context/AdminDataContext';
 import { ICONS, EmptyState } from './icons';
-import type { AdminStory, StoryStatus, VotingCategory } from './types';
+import type { AdminStory, StoryStatus, GallerySection } from './types';
 import VotingTab from './context/votingTab';
+import ServicesTestimonialsTab from './ServicesTestimonialsTab';
 
 // ─────────────────────────────────────────────
 // Shared image-upload hook
@@ -46,13 +47,12 @@ function useStorageUpload(folder: string) {
 
 // ─────────────────────────────────────────────
 // Reusable ImageUploadField component
-// Replaces every "Image URL" text input in the admin forms.
 // ─────────────────────────────────────────────
 interface ImageUploadFieldProps {
   label?: string;
-  value: string;           // current download URL (or empty)
+  value: string;
   onChange: (url: string) => void;
-  folder: string;          // Firebase Storage sub-folder
+  folder: string;
   previewHeight?: number;
 }
 
@@ -75,7 +75,6 @@ export function ImageUploadField({
     } catch {
       // error already set inside hook
     }
-    // reset so same file can be re-selected
     if (inputRef.current) inputRef.current.value = '';
   }
 
@@ -83,7 +82,6 @@ export function ImageUploadField({
     <div>
       {label && <label className="field-label-admin">{label}</label>}
 
-      {/* Hidden native file input */}
       <input
         ref={inputRef}
         type="file"
@@ -92,7 +90,6 @@ export function ImageUploadField({
         onChange={handleFile}
       />
 
-      {/* Upload button / progress */}
       <button
         type="button"
         className="btn-outline-admin w-full"
@@ -128,7 +125,6 @@ export function ImageUploadField({
         )}
       </button>
 
-      {/* Progress bar */}
       {uploading && (
         <div style={{ height: 3, background: 'var(--off-white)', marginBottom: '.4rem' }}>
           <div
@@ -148,7 +144,6 @@ export function ImageUploadField({
         </p>
       )}
 
-      {/* Preview */}
       {value && (
         <div style={{ position: 'relative' }}>
           <img
@@ -189,22 +184,15 @@ export function ImageUploadField({
 // ─────────────────────────────────────────────
 // Tab constants
 // ─────────────────────────────────────────────
-const TABS = ['stories', 'voting', 'gallery', 'shop'] as const;
+const TABS = ['stories', 'voting', 'gallery', 'shop', 'services'] as const;
 type Tab = (typeof TABS)[number];
 const TAB_LABELS: Record<Tab, string> = {
   stories: 'Featured Stories',
   voting: 'Voting Arena',
   gallery: 'Cogvana Gallery',
   shop: 'Shop Products',
+  services: 'Services & Testimonials',
 };
-
-function votingCountdownText(closes: string) {
-  const diff = new Date(closes + 'T23:59:00').getTime() - Date.now();
-  if (diff <= 0) return 'Closed';
-  const days = Math.floor(diff / 86400000);
-  const hrs = Math.floor((diff % 86400000) / 3600000);
-  return `${days}d ${hrs}h left`;
-}
 
 const emptyStory = (): Omit<AdminStory, 'id'> => ({
   title: '',
@@ -346,7 +334,6 @@ function StoriesTab() {
         ))}
       </div>
 
-      {/* Story Modal */}
       <div className={`modal-admin ${modalOpen ? 'active' : ''}`}>
         <div className="modal-backdrop-admin" onClick={() => setModalOpen(false)} />
         <div className="modal-box-admin" style={{ maxWidth: 600 }}>
@@ -403,7 +390,6 @@ function StoriesTab() {
               </div>
             </div>
 
-            {/* ▶ STORAGE UPLOAD replaces URL input */}
             <ImageUploadField
               label="Cover Image"
               value={form.image}
@@ -470,380 +456,18 @@ function StoriesTab() {
 }
 
 // ─────────────────────────────────────────────
-// VOTING TAB
-// ─────────────────────────────────────────────
-const STAGES: { key: VotingCategory['status']; label: string }[] = [
-  { key: 'open', label: 'Open' },
-  { key: 'scheduled', label: 'Scheduled' },
-  { key: 'closed', label: 'Closed' },
-];
-
-// function VotingTab() {
-//   const {
-//     votingCategories,
-//     saveCategorySchedule,
-//     addContestant,
-//     updateContestant,
-//     deleteContestant,
-//     crownWinner,
-//     resetCategoryVotes,
-//     resetAllVotes,
-//     openConfirm,
-//   } = useAdminData();
-
-//   const [schedules, setSchedules] = useState<
-//     Record<number, { opens: string; closes: string; status: VotingCategory['status'] }>
-//   >(() =>
-//     Object.fromEntries(
-//       votingCategories.map((c) => [c.id, { opens: c.opens, closes: c.closes, status: c.status }])
-//     )
-//   );
-//   const [contModal, setContModal] = useState<{ catId: number; contId: number | null } | null>(null);
-//   const [contForm, setContForm] = useState({
-//     name: '',
-//     tagline: '',
-//     image: '',
-//     reward: '',
-//     votes: 0,
-//   });
-
-//   function openAddContestant(catId: number) {
-//     setContModal({ catId, contId: null });
-//     setContForm({ name: '', tagline: '', image: '', reward: '🏆 Magazine Feature', votes: 0 });
-//   }
-//   function openEditContestant(catId: number, contId: number) {
-//     const cat = votingCategories.find((c) => c.id === catId)!;
-//     const p = cat.contestants.find((x) => x.id === contId)!;
-//     setContModal({ catId, contId });
-//     setContForm({ name: p.name, tagline: p.tagline, image: p.image, reward: p.reward, votes: p.votes });
-//   }
-//   function saveContestant(e: React.FormEvent) {
-//     e.preventDefault();
-//     if (!contModal) return;
-//     if (contModal.contId) updateContestant(contModal.catId, contModal.contId, contForm);
-//     else addContestant(contModal.catId, contForm);
-//     setContModal(null);
-//   }
-
-//   return (
-//     <div>
-//       <div className="page-head">
-//         <div>
-//           <p className="section-eyebrow mb-1">Community Choice</p>
-//           <h1 className="page-title">Voting Arena</h1>
-//         </div>
-//         <button
-//           className="btn-danger-admin"
-//           onClick={() =>
-//             openConfirm(
-//               'Reset ALL votes?',
-//               'This clears vote counts across every category. This cannot be undone.',
-//               resetAllVotes
-//             )
-//           }
-//         >
-//           Reset All Votes
-//         </button>
-//       </div>
-
-//       <div className="space-y-4">
-//         {votingCategories.map((c) => {
-//           const sorted = [...c.contestants].sort((a, b) => b.votes - a.votes);
-//           const max = sorted[0]?.votes || 1;
-//           const total = c.contestants.reduce((s, x) => s + x.votes, 0);
-//           const sched = schedules[c.id];
-//           return (
-//             <div className="panel" key={c.id}>
-//               <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-//                 <div className="flex items-center gap-2">
-//                   <span style={{ fontSize: '1.3rem' }}>{c.icon}</span>
-//                   <div>
-//                     <p className="font-display" style={{ fontSize: '1.05rem', fontWeight: 800 }}>
-//                       {c.name}
-//                     </p>
-//                     <p style={{ fontSize: '.66rem', color: 'var(--warm-gray)' }}>
-//                       {total.toLocaleString()} total votes · {votingCountdownText(c.closes)}
-//                     </p>
-//                   </div>
-//                   <span
-//                     className={`badge ${
-//                       c.status === 'open'
-//                         ? 'badge-success'
-//                         : c.status === 'scheduled'
-//                         ? 'badge-info'
-//                         : 'badge-gray'
-//                     }`}
-//                   >
-//                     {c.status}
-//                   </span>
-//                 </div>
-//                 {sched && (
-//                   <div className="flex items-end gap-2 flex-wrap">
-//                     <div>
-//                       <label className="field-label-admin">Opens</label>
-//                       <input
-//                         type="date"
-//                         className="form-input-admin"
-//                         style={{ fontSize: '.7rem', padding: '.4rem' }}
-//                         value={sched.opens}
-//                         onChange={(e) =>
-//                           setSchedules({ ...schedules, [c.id]: { ...sched, opens: e.target.value } })
-//                         }
-//                       />
-//                     </div>
-//                     <div>
-//                       <label className="field-label-admin">Closes</label>
-//                       <input
-//                         type="date"
-//                         className="form-input-admin"
-//                         style={{ fontSize: '.7rem', padding: '.4rem' }}
-//                         value={sched.closes}
-//                         onChange={(e) =>
-//                           setSchedules({ ...schedules, [c.id]: { ...sched, closes: e.target.value } })
-//                         }
-//                       />
-//                     </div>
-//                     <div>
-//                       <label className="field-label-admin">Status</label>
-//                       <select
-//                         className="form-input-admin"
-//                         style={{ fontSize: '.7rem', padding: '.4rem' }}
-//                         value={sched.status}
-//                         onChange={(e) =>
-//                           setSchedules({
-//                             ...schedules,
-//                             [c.id]: { ...sched, status: e.target.value as VotingCategory['status'] },
-//                           })
-//                         }
-//                       >
-//                         {STAGES.map((s) => (
-//                           <option key={s.key} value={s.key}>
-//                             {s.label}
-//                           </option>
-//                         ))}
-//                       </select>
-//                     </div>
-//                     <button
-//                       className="btn-outline-admin"
-//                       style={{ fontSize: '.62rem' }}
-//                       onClick={() => saveCategorySchedule(c.id, sched.opens, sched.closes, sched.status)}
-//                     >
-//                       Save Schedule
-//                     </button>
-//                   </div>
-//                 )}
-//               </div>
-
-//               <div className="space-y-2 mb-3">
-//                 {sorted.map((p, i) => (
-//                   <div
-//                     className="flex items-center gap-3 p-2"
-//                     style={{ border: '1px solid var(--line)' }}
-//                     key={p.id}
-//                   >
-//                     <span style={{ fontSize: '.7rem', color: 'var(--warm-gray)', width: 16 }}>#{i + 1}</span>
-//                     {p.image ? (
-//                       <img
-//                         src={p.image}
-//                         style={{
-//                           width: 40,
-//                           height: 40,
-//                           objectFit: 'cover',
-//                           flexShrink: 0,
-//                           outline: p.winner ? '2px solid var(--gold)' : 'none',
-//                         }}
-//                       />
-//                     ) : (
-//                       <div
-//                         style={{
-//                           width: 40,
-//                           height: 40,
-//                           background: 'var(--off-white)',
-//                           flexShrink: 0,
-//                           display: 'flex',
-//                           alignItems: 'center',
-//                           justifyContent: 'center',
-//                         }}
-//                       >
-//                         <span style={{ fontSize: '.5rem', color: 'var(--warm-gray)' }}>No img</span>
-//                       </div>
-//                     )}
-//                     <div className="flex-1 min-w-0">
-//                       <p style={{ fontSize: '.78rem', fontWeight: 600 }} className="truncate">
-//                         {p.name} {p.winner ? '👑' : ''}
-//                       </p>
-//                       <p
-//                         className="font-script truncate"
-//                         style={{ fontSize: '.72rem', fontStyle: 'italic', color: 'var(--warm-gray)' }}
-//                       >
-//                         {p.tagline}
-//                       </p>
-//                       <div style={{ background: 'var(--off-white)', height: 3, marginTop: '.3rem', maxWidth: 220 }}>
-//                         <div
-//                           style={{
-//                             height: 3,
-//                             width: `${Math.round((p.votes / max) * 100)}%`,
-//                             background: 'var(--gold)',
-//                           }}
-//                         />
-//                       </div>
-//                     </div>
-//                     <span className="badge badge-gray hidden sm:inline-flex">{p.reward}</span>
-//                     <span
-//                       className="font-display"
-//                       style={{
-//                         fontSize: '1.05rem',
-//                         fontWeight: 800,
-//                         color: 'var(--gold)',
-//                         minWidth: 50,
-//                         textAlign: 'right',
-//                       }}
-//                     >
-//                       {p.votes.toLocaleString()}
-//                     </span>
-//                     <div className="flex gap-1">
-//                       <button className="btn-icon" title="Crown as winner" onClick={() => crownWinner(c.id, p.id)}>
-//                         {ICONS.crown}
-//                       </button>
-//                       <button
-//                         className="btn-icon"
-//                         title="Edit"
-//                         onClick={() => openEditContestant(c.id, p.id)}
-//                       >
-//                         {ICONS.edit}
-//                       </button>
-//                       <button
-//                         className="btn-icon danger"
-//                         title="Remove"
-//                         onClick={() =>
-//                           openConfirm(
-//                             'Remove contestant?',
-//                             `"${p.name}" will be removed from ${c.name}.`,
-//                             () => deleteContestant(c.id, p.id)
-//                           )
-//                         }
-//                       >
-//                         {ICONS.trash}
-//                       </button>
-//                     </div>
-//                   </div>
-//                 ))}
-//               </div>
-
-//               <div className="flex gap-2">
-//                 <button
-//                   className="btn-outline-admin"
-//                   style={{ fontSize: '.66rem' }}
-//                   onClick={() => openAddContestant(c.id)}
-//                 >
-//                   + Add Contestant
-//                 </button>
-//                 <button
-//                   className="btn-danger-admin"
-//                   style={{ fontSize: '.62rem' }}
-//                   onClick={() =>
-//                     openConfirm(
-//                       'Reset votes?',
-//                       `All vote counts in ${c.name} will be set to zero.`,
-//                       () => resetCategoryVotes(c.id)
-//                     )
-//                   }
-//                 >
-//                   Reset Category Votes
-//                 </button>
-//               </div>
-//             </div>
-//           );
-//         })}
-//       </div>
-
-//       {/* Contestant Modal */}
-//       <div className={`modal-admin ${contModal ? 'active' : ''}`}>
-//         <div className="modal-backdrop-admin" onClick={() => setContModal(null)} />
-//         <div className="modal-box-admin" style={{ maxWidth: 480 }}>
-//           <button
-//             className="modal-close"
-//             onClick={() => setContModal(null)}
-//             style={{ position: 'absolute', top: '.7rem', right: '.7rem', fontSize: '1.3rem', background: 'none', border: 'none', cursor: 'pointer', color: '#999' }}
-//           >
-//             &times;
-//           </button>
-//           <div style={{ padding: '1.2rem 1.4rem .9rem', borderBottom: '1px solid var(--line)' }}>
-//             <p className="section-eyebrow mb-1">{contModal?.contId ? 'Edit Entry' : 'New Entry'}</p>
-//             <h2 className="font-display" style={{ fontSize: '1.2rem', fontWeight: 800 }}>
-//               {contModal?.contId ? 'Edit Contestant' : 'Add Contestant'}
-//             </h2>
-//           </div>
-//           <form onSubmit={saveContestant} className="space-y-3" style={{ padding: '1.2rem 1.4rem' }}>
-//             <div>
-//               <label className="field-label-admin">Name</label>
-//               <input
-//                 className="form-input-admin"
-//                 required
-//                 value={contForm.name}
-//                 onChange={(e) => setContForm({ ...contForm, name: e.target.value })}
-//               />
-//             </div>
-//             <div>
-//               <label className="field-label-admin">Tagline</label>
-//               <input
-//                 className="form-input-admin"
-//                 value={contForm.tagline}
-//                 onChange={(e) => setContForm({ ...contForm, tagline: e.target.value })}
-//               />
-//             </div>
-
-//             {/* ▶ STORAGE UPLOAD replaces URL input */}
-//             <ImageUploadField
-//               label="Contestant Photo"
-//               value={contForm.image}
-//               onChange={(url) => setContForm({ ...contForm, image: url })}
-//               folder="contestants"
-//               previewHeight={100}
-//             />
-
-//             <div className="grid grid-cols-2 gap-3">
-//               <div>
-//                 <label className="field-label-admin">Reward Badge</label>
-//                 <input
-//                   className="form-input-admin"
-//                   value={contForm.reward}
-//                   onChange={(e) => setContForm({ ...contForm, reward: e.target.value })}
-//                 />
-//               </div>
-//               <div>
-//                 <label className="field-label-admin">Votes</label>
-//                 <input
-//                   type="number"
-//                   min={0}
-//                   className="form-input-admin"
-//                   value={contForm.votes}
-//                   onChange={(e) => setContForm({ ...contForm, votes: Number(e.target.value) })}
-//                 />
-//               </div>
-//             </div>
-//             <div className="flex gap-2 justify-end" style={{ marginTop: '.6rem' }}>
-//               <button type="button" className="btn-outline-admin" onClick={() => setContModal(null)}>
-//                 Cancel
-//               </button>
-//               <button type="submit" className="btn-gold-admin">
-//                 Save Contestant
-//               </button>
-//             </div>
-//           </form>
-//         </div>
-//       </div>
-//     </div>
-//   );
-// }
-
-// ─────────────────────────────────────────────
-// GALLERY TAB
+// GALLERY TAB (now with section: cover | masonry)
 // ─────────────────────────────────────────────
 function GalleryTab() {
   const { gallery, addGalleryImage, moveGalleryImage, deleteGalleryImage, openConfirm } = useAdminData();
+  const [sectionFilter, setSectionFilter] = useState<'all' | GallerySection>('all');
   const [modalOpen, setModalOpen] = useState(false);
-  const [form, setForm] = useState({ image: '', caption: '', credit: '' });
+  const [form, setForm] = useState<{ image: string; caption: string; credit: string; section: GallerySection }>({
+    image: '',
+    caption: '',
+    credit: '',
+    section: 'masonry',
+  });
 
   function save(e: React.FormEvent) {
     e.preventDefault();
@@ -852,10 +476,13 @@ function GalleryTab() {
       image: form.image,
       caption: form.caption || 'Untitled',
       credit: form.credit || 'P&S Studio',
+      section: form.section,
     });
-    setForm({ image: '', caption: '', credit: '' });
+    setForm({ image: '', caption: '', credit: '', section: 'masonry' });
     setModalOpen(false);
   }
+
+  const list = gallery.filter((g) => sectionFilter === 'all' || g.section === sectionFilter);
 
   return (
     <div>
@@ -869,10 +496,28 @@ function GalleryTab() {
         </button>
       </div>
 
+      <div className="flex gap-2 mb-4 flex-wrap">
+        {(['all', 'cover', 'masonry'] as const).map((s) => (
+          <button
+            key={s}
+            className={`filter-chip ${sectionFilter === s ? 'active' : ''}`}
+            onClick={() => setSectionFilter(s)}
+          >
+            {s === 'all' ? 'All' : s === 'cover' ? 'Cover Strip' : 'Masonry Grid'}
+          </button>
+        ))}
+      </div>
+
       <div className="gal-masonry">
-        {gallery.map((g) => (
+        {list.map((g) => (
           <div className="gal-item" key={g.id}>
             <img src={g.image} />
+            <span
+              className={`badge ${g.section === 'cover' ? 'badge-gold' : 'badge-gray'}`}
+              style={{ position: 'absolute', top: '.4rem', left: '.4rem' }}
+            >
+              {g.section === 'cover' ? 'Cover' : 'Masonry'}
+            </span>
             <div className="gal-cap">
               <p style={{ fontSize: '.78rem', fontWeight: 700 }}>{g.caption}</p>
               <p style={{ fontSize: '.65rem', opacity: 0.75 }}>{g.credit}</p>
@@ -911,9 +556,9 @@ function GalleryTab() {
             </div>
           </div>
         ))}
+        {list.length === 0 && <EmptyState message="No images in this section yet." />}
       </div>
 
-      {/* Gallery Modal */}
       <div className={`modal-admin ${modalOpen ? 'active' : ''}`}>
         <div className="modal-backdrop-admin" onClick={() => setModalOpen(false)} />
         <div className="modal-box-admin" style={{ maxWidth: 460 }}>
@@ -930,7 +575,6 @@ function GalleryTab() {
             </h2>
           </div>
           <form onSubmit={save} className="space-y-3" style={{ padding: '1.2rem 1.4rem' }}>
-            {/* ▶ STORAGE UPLOAD replaces URL input */}
             <ImageUploadField
               label="Image"
               value={form.image}
@@ -938,6 +582,18 @@ function GalleryTab() {
               folder="gallery"
               previewHeight={160}
             />
+
+            <div>
+              <label className="field-label-admin">Placement</label>
+              <select
+                className="form-input-admin"
+                value={form.section}
+                onChange={(e) => setForm({ ...form, section: e.target.value as GallerySection })}
+              >
+                <option value="cover">Cover Strip (Cogvana scroll carousel)</option>
+                <option value="masonry">Masonry Grid (Editorial Gallery)</option>
+              </select>
+            </div>
 
             <div>
               <label className="field-label-admin">Caption</label>
@@ -972,30 +628,43 @@ function GalleryTab() {
 }
 
 // ─────────────────────────────────────────────
-// SHOP TAB
+// SHOP TAB (now with wide/digital flags)
 // ─────────────────────────────────────────────
 function ShopTab() {
   const { products, addProduct, updateProduct, deleteProduct, openConfirm } = useAdminData();
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [form, setForm] = useState({ name: '', image: '', price: 0, stock: 0, category: '' });
+  const [form, setForm] = useState({
+    name: '',
+    image: '',
+    price: 0,
+    stock: 0,
+    category: '',
+    wide: false,
+    digital: false,
+  });
 
   function openAdd() {
     setEditingId(null);
-    setForm({ name: '', image: '', price: 0, stock: 0, category: '' });
+    setForm({ name: '', image: '', price: 0, stock: 0, category: '', wide: false, digital: false });
     setModalOpen(true);
   }
   function openEdit(p: (typeof products)[number]) {
     setEditingId(p.id);
-    setForm({ name: p.name, image: p.image, price: p.price, stock: p.stock, category: p.category });
+    setForm({
+      name: p.name,
+      image: p.image,
+      price: p.price,
+      stock: p.stock,
+      category: p.category,
+      wide: !!p.wide,
+      digital: !!p.digital,
+    });
     setModalOpen(true);
   }
   function save(e: React.FormEvent) {
     e.preventDefault();
-    const payload = {
-      ...form,
-      category: form.category || 'General',
-    };
+    const payload = { ...form, category: form.category || 'General' };
     if (editingId) updateProduct(editingId, payload);
     else addProduct(payload);
     setModalOpen(false);
@@ -1014,6 +683,7 @@ function ShopTab() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {products.length === 0 && <EmptyState message="No products yet. Add your first one." />}
         {products.map((p) => (
           <div className="data-card" key={p.id}>
             <div style={{ height: 140, overflow: 'hidden', position: 'relative' }}>
@@ -1042,6 +712,11 @@ function ShopTab() {
                   Low Stock
                 </span>
               ) : null}
+              {p.digital && (
+                <span className="badge badge-info" style={{ position: 'absolute', top: '.5rem', left: '.5rem' }}>
+                  Digital
+                </span>
+              )}
             </div>
             <div className="p-3">
               <p className="badge badge-gray mb-1.5">{p.category}</p>
@@ -1075,7 +750,6 @@ function ShopTab() {
         ))}
       </div>
 
-      {/* Product Modal */}
       <div className={`modal-admin ${modalOpen ? 'active' : ''}`}>
         <div className="modal-backdrop-admin" onClick={() => setModalOpen(false)} />
         <div className="modal-box-admin" style={{ maxWidth: 480 }}>
@@ -1103,7 +777,6 @@ function ShopTab() {
               />
             </div>
 
-            {/* ▶ STORAGE UPLOAD replaces URL input */}
             <ImageUploadField
               label="Product Image"
               value={form.image}
@@ -1131,6 +804,7 @@ function ShopTab() {
                   className="form-input-admin"
                   value={form.stock}
                   onChange={(e) => setForm({ ...form, stock: Number(e.target.value) })}
+                  disabled={form.digital}
                 />
               </div>
             </div>
@@ -1142,6 +816,28 @@ function ShopTab() {
                 value={form.category}
                 onChange={(e) => setForm({ ...form, category: e.target.value })}
               />
+            </div>
+            <div className="flex gap-5">
+              <label className="flex items-center gap-2" style={{ cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={form.wide}
+                  onChange={(e) => setForm({ ...form, wide: e.target.checked })}
+                  style={{ accentColor: 'var(--gold)' }}
+                />
+                <span style={{ fontSize: '.74rem' }}>Wide card (spans 2 columns)</span>
+              </label>
+              <label className="flex items-center gap-2" style={{ cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={form.digital}
+                  onChange={(e) =>
+                    setForm({ ...form, digital: e.target.checked, stock: e.target.checked ? 9999 : form.stock })
+                  }
+                  style={{ accentColor: 'var(--gold)' }}
+                />
+                <span style={{ fontSize: '.74rem' }}>Digital product (no stock limit)</span>
+              </label>
             </div>
             <div className="flex gap-2 justify-end" style={{ marginTop: '.6rem' }}>
               <button type="button" className="btn-outline-admin" onClick={() => setModalOpen(false)}>
@@ -1181,6 +877,7 @@ export default function ContentSection() {
       {tab === 'voting' && <VotingTab />}
       {tab === 'gallery' && <GalleryTab />}
       {tab === 'shop' && <ShopTab />}
+      {tab === 'services' && <ServicesTestimonialsTab />}
     </div>
   );
 }

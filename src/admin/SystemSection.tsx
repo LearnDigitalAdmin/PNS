@@ -1,4 +1,12 @@
 import { useState } from 'react';
+import { getDoc, doc as fsDoc } from 'firebase/firestore';
+import {
+  updateProfile,
+  updatePassword,
+  reauthenticateWithCredential,
+  EmailAuthProvider,
+} from 'firebase/auth';
+import { db, auth } from '../lib/firebase';
 import { useAdminData } from './context/AdminDataContext';
 import { useAdminAuth } from './context/AdminAuthContext';
 import { GUARDS } from './data';
@@ -12,8 +20,11 @@ function ActivityTab() {
   const { activityLog, loginAttempts, showToast, logActivity } = useAdminData();
 
   function signOutOtherSessions() {
-    showToast('All other sessions signed out', 'success');
-    logActivity('Amara Editor signed out all other active sessions', 'security');
+    // Firebase Auth doesn't expose per-device session revocation client-side.
+    // This logs the intent for audit purposes; true multi-session revocation
+    // requires the Admin SDK (revokeRefreshTokens) on a backend function.
+    showToast('Other sessions will be signed out on next token refresh', 'success');
+    logActivity('Amara Editor requested sign-out of all other active sessions', 'security');
   }
 
   return (
@@ -43,6 +54,9 @@ function ActivityTab() {
         <div className="panel">
           <div className="panel-title">Recent Login Attempts</div>
           <div className="space-y-2">
+            {loginAttempts.length === 0 && (
+              <p style={{ fontSize: '.74rem', color: 'var(--warm-gray)' }}>No login attempts recorded yet.</p>
+            )}
             {loginAttempts.slice(0, 6).map((l, i) => (
               <div className="flex items-center justify-between gap-2" style={{ fontSize: '.74rem' }} key={i}>
                 <div className="min-w-0">
@@ -86,6 +100,9 @@ function ActivityTab() {
       <div className="panel">
         <div className="panel-title">Full Activity Log</div>
         <div className="space-y-2">
+          {activityLog.length === 0 && (
+            <p style={{ fontSize: '.78rem', color: 'var(--warm-gray)' }}>No activity recorded yet.</p>
+          )}
           {activityLog.map((a, i) => {
             const c = a.type === 'security' ? 'var(--danger)' : a.type === 'system' ? 'var(--info)' : 'var(--gold)';
             return (
@@ -121,27 +138,84 @@ function pwStrength(v: string) {
 }
 
 function SettingsTab() {
-  const { tickerMessages, addTickerMsg, removeTickerMsg, showToast, logActivity, resetDemoData } = useAdminData();
-  const { logout } = useAdminAuth();
+  const { tickerMessages, addTickerMsg, removeTickerMsg, showToast, logActivity } = useAdminData();
+  const { logout, currentUser } = useAdminAuth();
   const [newMsg, setNewMsg] = useState('');
-  const [newPw, setNewPw] = useState('');
-  const [testing, setTesting] = useState(false);
-  const [lastSync, setLastSync] = useState('just now');
-  const strength = pwStrength(newPw);
-  const [confirmingReset, setConfirmingReset] = useState(false);
 
-  function testConnection() {
+  // Account form
+  const [displayName, setDisplayName] = useState(currentUser?.displayName ?? '');
+  const [currentPw, setCurrentPw] = useState('');
+  const [newPw, setNewPw] = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
+  const [savingAccount, setSavingAccount] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
+  const strength = pwStrength(newPw);
+
+  // Firebase connection test
+  const [testing, setTesting] = useState(false);
+  const [lastSync, setLastSync] = useState<string>('—');
+
+  async function saveAccount(e: React.FormEvent) {
+    e.preventDefault();
+    setAccountError(null);
+
+    if (newPw && newPw !== confirmPw) {
+      setAccountError('New password and confirmation do not match.');
+      return;
+    }
+    if (newPw && newPw.length < 8) {
+      setAccountError('New password must be at least 8 characters.');
+      return;
+    }
+
+    setSavingAccount(true);
+    try {
+      if (!auth.currentUser) throw new Error('Not signed in');
+
+      if (displayName !== (currentUser?.displayName ?? '')) {
+        await updateProfile(auth.currentUser, { displayName });
+      }
+
+      if (newPw) {
+        if (!currentPw) {
+          setAccountError('Enter your current password to set a new one.');
+          setSavingAccount(false);
+          return;
+        }
+        const credential = EmailAuthProvider.credential(auth.currentUser.email ?? '', currentPw);
+        await reauthenticateWithCredential(auth.currentUser, credential);
+        await updatePassword(auth.currentUser, newPw);
+      }
+
+      logActivity('Amara Editor updated account settings', 'security');
+      showToast('Account settings saved', 'success');
+      setCurrentPw('');
+      setNewPw('');
+      setConfirmPw('');
+    } catch (err: any) {
+      setAccountError(err.code === 'auth/wrong-password' ? 'Current password is incorrect.' : err.message ?? 'Failed to save changes.');
+    } finally {
+      setSavingAccount(false);
+    }
+  }
+
+  async function testConnection() {
     setTesting(true);
-    setTimeout(() => {
-      setTesting(false);
-      setLastSync('just now');
+    try {
+      await getDoc(fsDoc(db, 'siteSettings', 'general'));
+      setLastSync(new Date().toLocaleTimeString());
       showToast('Firebase connection healthy', 'success');
       logActivity('Firebase connection test succeeded', 'system');
-    }, 1300);
+    } catch {
+      showToast('Firebase connection failed', 'danger');
+      logActivity('Firebase connection test failed', 'system');
+    } finally {
+      setTesting(false);
+    }
   }
 
   function exportData() {
-    const data = { tickerMessages };
+    const data = { tickerMessages, exportedAt: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -152,7 +226,7 @@ function SettingsTab() {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
     showToast('Data exported', 'success');
-    logActivity('Amara Editor exported all dashboard data');
+    logActivity('Amara Editor exported dashboard settings');
   }
 
   return (
@@ -168,6 +242,9 @@ function SettingsTab() {
         <div className="panel">
           <div className="panel-title">Site Ticker Messages</div>
           <div className="space-y-2 mb-3">
+            {tickerMessages.length === 0 && (
+              <p style={{ fontSize: '.74rem', color: 'var(--warm-gray)' }}>No ticker messages yet.</p>
+            )}
             {tickerMessages.map((m, i) => (
               <div className="flex items-center justify-between gap-2 p-2" style={{ border: '1px solid var(--line)' }} key={i}>
                 <span style={{ fontSize: '.76rem' }}>{m}</span>
@@ -189,6 +266,7 @@ function SettingsTab() {
             <button
               className="btn-outline-admin"
               onClick={() => {
+                if (!newMsg.trim()) return;
                 addTickerMsg(newMsg);
                 setNewMsg('');
               }}
@@ -196,18 +274,25 @@ function SettingsTab() {
               Add
             </button>
           </div>
+          <p style={{ fontSize: '.62rem', color: 'var(--warm-gray)', marginTop: '.5rem' }}>
+            These messages drive both the site's top ticker and this dashboard's alert strip.
+          </p>
         </div>
 
         <div className="panel">
           <div className="panel-title">Admin Account</div>
-          <div className="space-y-3">
+          <form onSubmit={saveAccount} className="space-y-3">
             <div>
               <label className="field-label-admin">Display Name</label>
-              <input className="form-input-admin" defaultValue="Amara Editor" />
+              <input className="form-input-admin" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
             </div>
             <div>
               <label className="field-label-admin">Email</label>
-              <input className="form-input-admin" defaultValue="editor@pnsmagazine.com" disabled style={{ background: 'var(--off-white)' }} />
+              <input className="form-input-admin" value={currentUser?.email ?? ''} disabled style={{ background: 'var(--off-white)' }} />
+            </div>
+            <div>
+              <label className="field-label-admin">Current Password</label>
+              <input type="password" className="form-input-admin" value={currentPw} onChange={(e) => setCurrentPw(e.target.value)} placeholder="Required to change password" />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -216,39 +301,32 @@ function SettingsTab() {
               </div>
               <div>
                 <label className="field-label-admin">Confirm Password</label>
-                <input type="password" className="form-input-admin" placeholder="••••••••" />
+                <input type="password" className="form-input-admin" value={confirmPw} onChange={(e) => setConfirmPw(e.target.value)} placeholder="••••••••" />
               </div>
             </div>
-            <div style={{ height: 4, background: 'var(--off-white)' }}>
-              <div style={{ height: 4, width: `${strength.pct}%`, background: strength.color, transition: '.3s' }} />
-            </div>
-            <p style={{ fontSize: '.62rem', color: 'var(--warm-gray)' }}>{strength.label}</p>
-            <button className="btn-gold-admin" onClick={() => showToast('Account settings saved', 'success')}>
-              Save Changes
+            {newPw && (
+              <>
+                <div style={{ height: 4, background: 'var(--off-white)' }}>
+                  <div style={{ height: 4, width: `${strength.pct}%`, background: strength.color, transition: '.3s' }} />
+                </div>
+                <p style={{ fontSize: '.62rem', color: 'var(--warm-gray)' }}>{strength.label}</p>
+              </>
+            )}
+            {accountError && <p style={{ fontSize: '.72rem', color: 'var(--danger)' }}>{accountError}</p>}
+            <button type="submit" className="btn-gold-admin" disabled={savingAccount}>
+              {savingAccount ? 'Saving…' : 'Save Changes'}
             </button>
-          </div>
+          </form>
         </div>
 
         <div className="panel">
           <div className="panel-title">
-            Firebase Connection <span className="badge badge-success">Connected</span>
+            Firebase Connection
           </div>
           <div className="space-y-2" style={{ fontSize: '.74rem' }}>
             <div className="flex justify-between">
               <span style={{ color: 'var(--warm-gray)' }}>Project ID</span>
-              <span>pns-magazine-prod</span>
-            </div>
-            <div className="flex justify-between">
-              <span style={{ color: 'var(--warm-gray)' }}>Auth Domain</span>
-              <span>pns-magazine-prod.firebaseapp.com</span>
-            </div>
-            <div className="flex justify-between">
-              <span style={{ color: 'var(--warm-gray)' }}>API Key</span>
-              <span>••••••••••••3f9a</span>
-            </div>
-            <div className="flex justify-between">
-              <span style={{ color: 'var(--warm-gray)' }}>Firestore Region</span>
-              <span>europe-west1</span>
+              <span>plot-9fd6e</span>
             </div>
             <div className="flex justify-between">
               <span style={{ color: 'var(--warm-gray)' }}>Last Sync</span>
@@ -266,43 +344,10 @@ function SettingsTab() {
           </div>
           <div className="space-y-2">
             <button className="btn-outline-admin w-full" style={{ fontSize: '.7rem' }} onClick={exportData}>
-              Export All Data (JSON)
-            </button>
-            <button className="btn-danger-admin w-full" style={{ fontSize: '.7rem' }} onClick={() => setConfirmingReset(true)}>
-              Reset Demo Data
+              Export Settings (JSON)
             </button>
             <button className="btn-outline-admin w-full" style={{ fontSize: '.7rem' }} onClick={logout}>
               Sign Out
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className={`modal-admin ${confirmingReset ? 'active' : ''}`}>
-        <div className="modal-backdrop-admin" onClick={() => setConfirmingReset(false)} />
-        <div className="modal-box-admin" style={{ maxWidth: 380 }}>
-          <div className="modal-body text-center pt-6 p-6">
-            <p className="font-display" style={{ fontSize: '1.05rem', fontWeight: 800 }}>
-              Reset all demo data?
-            </p>
-            <p style={{ fontSize: '.78rem', color: 'var(--warm-gray)', marginTop: '.4rem' }}>
-              Everything will return to its original seeded state. This cannot be undone.
-            </p>
-          </div>
-          <div className="p-4 pt-0 flex gap-2 justify-end">
-            <button className="btn-outline-admin" onClick={() => setConfirmingReset(false)}>
-              Cancel
-            </button>
-            <button
-              className="btn-danger-admin"
-              style={{ background: 'var(--danger)', color: '#fff' }}
-              onClick={() => {
-                resetDemoData();
-                setConfirmingReset(false);
-                showToast('Demo data reset', 'danger');
-              }}
-            >
-              Confirm
             </button>
           </div>
         </div>

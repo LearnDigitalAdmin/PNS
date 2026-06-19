@@ -6,37 +6,29 @@ import {
   updateDoc,
   deleteDoc,
   addDoc,
-  setDoc,
   serverTimestamp,
   query,
   orderBy,
+  limit,
 } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
-import {
-  createInitialVotingCategories,
-  createInitialProducts,
-  createInitialGallery,
-  createInitialActivityLog,
-  createInitialLoginAttempts,
-  createInitialTickerMessages,
-  REQUEST_TYPE_LABELS,
-  nextId,
-} from '../data';
+import { formatRelativeTime } from '../../lib/formatTime';
+
+
+import { nextId } from '../data';
 import type {
   AdminStory,
-  VotingCategory,
   RequestsState,
   RequestType,
   RequestStatus,
   SponsoredDeal,
-  DealStage,
   Partner,
-  PartnerStatus,
   Product,
   GalleryImage,
   ActivityLogEntry,
   LoginAttempt,
 } from '../types';
+import { addTickerMessage, removeTickerMessageAt, subscribeSiteSettings } from '../../lib/siteSettings';
 
 export type ToastType = 'info' | 'success' | 'danger';
 export interface Toast {
@@ -60,19 +52,8 @@ interface AdminDataValue {
   deleteStory: (id: number) => void;
   publishStory: (id: number) => void;
 
-  votingCategories: VotingCategory[];
-  saveCategorySchedule: (catId: number, opens: string, closes: string, status: VotingCategory['status']) => void;
-  addContestant: (catId: number, payload: { name: string; tagline: string; image: string; reward: string; votes: number }) => void;
-  updateContestant: (catId: number, contId: number, payload: { name: string; tagline: string; image: string; reward: string; votes: number }) => void;
-  deleteContestant: (catId: number, contId: number) => void;
-  crownWinner: (catId: number, contId: number) => void;
-  resetCategoryVotes: (catId: number) => void;
-  resetAllVotes: () => void;
-
-  // NOTE: requests/partners/sponsoredDeals are now Firestore-backed and
-  // read-only here (BusinessSection manages live CRUD on its own
-  // subscriptions). These mirrors exist purely so Overview/System can
-  // display accurate, real-time counts without duplicating logic.
+  // Read-only live mirrors (CRUD for these lives in BusinessSection /
+  // votingTab, which subscribe to Firestore directly).
   requests: RequestsState;
   partners: Partner[];
   sponsoredDeals: SponsoredDeal[];
@@ -83,7 +64,7 @@ interface AdminDataValue {
   deleteProduct: (id: number) => void;
 
   gallery: GalleryImage[];
-  addGalleryImage: (payload: Omit<GalleryImage, 'id'>) => void;
+  addGalleryImage: (payload: Omit<GalleryImage, 'id' | 'order'>) => void;
   moveGalleryImage: (id: number, dir: -1 | 1) => void;
   deleteGalleryImage: (id: number) => void;
 
@@ -103,8 +84,6 @@ interface AdminDataValue {
   confirmState: ConfirmState | null;
   openConfirm: (title: string, message: string, onConfirm: () => void) => void;
   closeConfirm: () => void;
-
-  resetDemoData: () => void;
 }
 
 const AdminDataContext = createContext<AdminDataValue | null>(null);
@@ -118,75 +97,8 @@ const emptyRequests = (): RequestsState => ({
 });
 
 export function AdminDataProvider({ children }: { children: React.ReactNode }) {
-  // ---------- Firestore-backed: stories ----------
-  const [stories, setStories] = useState<AdminStory[]>([]);
-  useEffect(() => {
-    const q = query(collection(db, 'stories'), orderBy('createdAt', 'desc'));
-    return onSnapshot(q, (snap) => {
-      setStories(
-        snap.docs.map((d) => {
-          const data = d.data();
-          return { id: nextId(), ...data, _fsId: d.id } as unknown as AdminStory;
-        })
-      );
-    });
-  }, []);
-
-  // ---------- Local-only: voting (kept in-memory, demo-seeded) ----------
-  const [votingCategories, setVotingCategories] = useState<VotingCategory[]>(createInitialVotingCategories);
-
-  // ---------- Firestore-backed: requests (read mirror for Overview/System) ----------
-  const [requests, setRequests] = useState<RequestsState>(emptyRequests);
-  useEffect(() => {
-    const unsubs = REQ_TYPES.map((type) => {
-      const q = query(collection(db, 'requests', type, 'items'), orderBy('createdAt', 'desc'));
-      return onSnapshot(q, (snap) => {
-        const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        setRequests((prev) => ({ ...prev, [type]: docs as any }));
-      });
-    });
-    return () => unsubs.forEach((u) => u());
-  }, []);
-
-  // ---------- Firestore-backed: sponsoredDeals ----------
-  const [sponsoredDeals, setSponsoredDeals] = useState<SponsoredDeal[]>([]);
-  useEffect(() => {
-    const q = query(collection(db, 'sponsoredDeals'), orderBy('createdAt', 'desc'));
-    return onSnapshot(q, (snap) => {
-      setSponsoredDeals(snap.docs.map((d) => ({ id: nextId(), ...d.data(), _fsId: d.id } as unknown as SponsoredDeal)));
-    });
-  }, []);
-
-  // ---------- Firestore-backed: partners ----------
-  const [partners, setPartners] = useState<Partner[]>([]);
-  useEffect(() => {
-    const q = query(collection(db, 'partners'), orderBy('createdAt', 'desc'));
-    return onSnapshot(q, (snap) => {
-      setPartners(snap.docs.map((d) => ({ id: nextId(), ...d.data(), _fsId: d.id } as unknown as Partner)));
-    });
-  }, []);
-
-  // ---------- Local-only demo data: products / gallery / activity / login / ticker ----------
-  const [products, setProducts] = useState<Product[]>(createInitialProducts);
-  const [gallery, setGallery] = useState<GalleryImage[]>(createInitialGallery);
-  const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>(createInitialActivityLog);
-  const [loginAttempts, setLoginAttempts] = useState<LoginAttempt[]>(createInitialLoginAttempts);
-  const [tickerMessages, setTickerMessages] = useState<string[]>(createInitialTickerMessages);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
-
-  const logActivity = useCallback((text: string, type: ActivityLogEntry['type'] = 'admin') => {
-    setActivityLog((prev) => [{ text, time: 'just now', type }, ...prev]);
-  }, []);
-
-  const logLoginAttempt = useCallback((email: string, status: LoginAttempt['status'], device: string) => {
-    setLoginAttempts((prev) =>
-      [
-        { email, status, location: status === 'success' ? 'Nairobi, KE' : 'Unknown location', device, time: 'just now' },
-        ...prev,
-      ].slice(0, 12)
-    );
-  }, []);
 
   const showToast = useCallback((message: string, type: ToastType = 'info') => {
     const id = nextId();
@@ -199,7 +111,100 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
   }, []);
   const closeConfirm = useCallback(() => setConfirmState(null), []);
 
-  // ---------- stories (Firestore writes) ----------
+  // ---------- activity log (Firestore-backed audit trail) ----------
+  const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
+  useEffect(() => {
+    const q = query(collection(db, 'activityLog'), orderBy('createdAt', 'desc'), limit(100));
+    return onSnapshot(q, (snap) => {
+      setActivityLog(
+        snap.docs.map((d) => {
+          const data = d.data();
+          return {
+            text: data.text as string,
+            type: (data.type as ActivityLogEntry['type']) ?? 'admin',
+            time: formatRelativeTime(data.createdAt),
+          };
+        })
+      );
+    });
+  }, []);
+
+  const logActivity = useCallback((text: string, type: ActivityLogEntry['type'] = 'admin') => {
+    addDoc(collection(db, 'activityLog'), { text, type, createdAt: serverTimestamp() }).catch((e) =>
+      console.error('logActivity failed:', e)
+    );
+  }, []);
+
+  // ---------- login attempts (Firestore-backed audit trail) ----------
+  const [loginAttempts, setLoginAttempts] = useState<LoginAttempt[]>([]);
+  useEffect(() => {
+    const q = query(collection(db, 'loginAttempts'), orderBy('createdAt', 'desc'), limit(12));
+    return onSnapshot(q, (snap) => {
+      setLoginAttempts(
+        snap.docs.map((d) => {
+          const data = d.data();
+          return {
+            email: data.email as string,
+            status: data.status as LoginAttempt['status'],
+            location: data.location as string,
+            device: data.device as string,
+            time: formatRelativeTime(data.createdAt),
+          };
+        })
+      );
+    });
+  }, []);
+
+  const logLoginAttempt = useCallback(
+    (email: string, status: LoginAttempt['status'], device: string) => {
+      addDoc(collection(db, 'loginAttempts'), {
+        email,
+        status,
+        device,
+        location: status === 'success' ? 'Nairobi, KE' : 'Unknown location',
+        createdAt: serverTimestamp(),
+      }).catch((e) => console.error('logLoginAttempt failed:', e));
+    },
+    []
+  );
+
+  // ---------- site settings: ticker ----------
+  const [tickerMessages, setTickerMessages] = useState<string[]>([]);
+  useEffect(() => subscribeSiteSettings((s) => setTickerMessages(s.tickerMessages)), []);
+
+  const addTickerMsg = useCallback(
+    (msg: string) => {
+      if (!msg.trim()) return;
+      addTickerMessage(msg.trim())
+        .then(() => {
+          logActivity('Amara Editor added a new site ticker message');
+          showToast('Ticker message added', 'success');
+        })
+        .catch(() => showToast('Failed to add ticker message', 'danger'));
+    },
+    [logActivity, showToast]
+  );
+
+  const removeTickerMsg = useCallback(
+    (idx: number) => {
+      removeTickerMessageAt(idx, tickerMessages)
+        .then(() => showToast('Ticker message removed', 'danger'))
+        .catch(() => showToast('Failed to remove ticker message', 'danger'));
+    },
+    [tickerMessages, showToast]
+  );
+
+  // ---------- stories ----------
+  const [stories, setStories] = useState<AdminStory[]>([]);
+  useEffect(() => {
+    const q = query(collection(db, 'stories'), orderBy('createdAt', 'desc'));
+    return onSnapshot(q, (snap) => {
+      setStories(
+        snap.docs.map((d) => ({ id: nextId(), ...d.data(), _fsId: d.id } as unknown as AdminStory))
+      );
+    });
+  }, []);
+
   const addStory = useCallback(
     async (payload: Omit<AdminStory, 'id'>) => {
       await addDoc(collection(db, 'stories'), { ...payload, createdAt: serverTimestamp() });
@@ -211,9 +216,7 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
   const updateStory = useCallback(
     async (id: number, payload: Omit<AdminStory, 'id'>) => {
       const target = stories.find((s) => s.id === id) as any;
-      if (target?._fsId) {
-        await updateDoc(doc(db, 'stories', target._fsId), { ...payload });
-      }
+      if (target?._fsId) await updateDoc(doc(db, 'stories', target._fsId), { ...payload });
       logActivity(`Amara Editor updated story "${payload.title}"`);
       showToast('Story updated', 'success');
     },
@@ -222,9 +225,7 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
   const deleteStory = useCallback(
     async (id: number) => {
       const target = stories.find((s) => s.id === id) as any;
-      if (target?._fsId) {
-        await deleteDoc(doc(db, 'stories', target._fsId));
-      }
+      if (target?._fsId) await deleteDoc(doc(db, 'stories', target._fsId));
       if (target) logActivity(`Amara Editor deleted story "${target.title}"`);
       showToast('Story deleted', 'danger');
     },
@@ -242,169 +243,129 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
     [stories, logActivity, showToast]
   );
 
-  // ---------- voting (local demo state — unchanged behavior) ----------
-  const saveCategorySchedule = useCallback(
-    (catId: number, opens: string, closes: string, status: VotingCategory['status']) => {
-      setVotingCategories((prev) => prev.map((c) => (c.id === catId ? { ...c, opens, closes, status } : c)));
-      const cat = votingCategories.find((c) => c.id === catId);
-      if (cat) {
-        logActivity(`Amara Editor updated voting schedule for ${cat.name}`);
-        showToast('Voting schedule saved', 'success');
-      }
-    },
-    [votingCategories, logActivity, showToast]
-  );
-  const addContestant = useCallback(
-    (catId: number, payload: { name: string; tagline: string; image: string; reward: string; votes: number }) => {
-      setVotingCategories((prev) =>
-        prev.map((c) => (c.id === catId ? { ...c, contestants: [...c.contestants, { id: nextId(), winner: false, ...payload }] } : c))
-      );
-      const cat = votingCategories.find((c) => c.id === catId);
-      logActivity(`Amara Editor added contestant "${payload.name}" to ${cat?.name ?? ''}`);
-      showToast('Contestant added', 'success');
-    },
-    [votingCategories, logActivity, showToast]
-  );
-  const updateContestant = useCallback(
-    (catId: number, contId: number, payload: { name: string; tagline: string; image: string; reward: string; votes: number }) => {
-      setVotingCategories((prev) =>
-        prev.map((c) =>
-          c.id === catId ? { ...c, contestants: c.contestants.map((p) => (p.id === contId ? { ...p, ...payload } : p)) } : c
-        )
-      );
-      logActivity(`Amara Editor updated contestant "${payload.name}"`);
-      showToast('Contestant updated', 'success');
-    },
-    [logActivity, showToast]
-  );
-  const deleteContestant = useCallback(
-    (catId: number, contId: number) => {
-      const cat = votingCategories.find((c) => c.id === catId);
-      const person = cat?.contestants.find((p) => p.id === contId);
-      setVotingCategories((prev) =>
-        prev.map((c) => (c.id === catId ? { ...c, contestants: c.contestants.filter((p) => p.id !== contId) } : c))
-      );
-      if (person && cat) logActivity(`Amara Editor removed contestant "${person.name}" from ${cat.name}`);
-      showToast('Contestant removed', 'danger');
-    },
-    [votingCategories, logActivity, showToast]
-  );
-  const crownWinner = useCallback(
-    (catId: number, contId: number) => {
-      setVotingCategories((prev) =>
-        prev.map((c) => (c.id === catId ? { ...c, contestants: c.contestants.map((p) => ({ ...p, winner: p.id === contId })) } : c))
-      );
-      const cat = votingCategories.find((c) => c.id === catId);
-      const person = cat?.contestants.find((p) => p.id === contId);
-      if (person && cat) {
-        showToast(`${person.name} crowned winner of ${cat.name}`, 'success');
-        logActivity(`Amara Editor crowned ${person.name} as winner of ${cat.name}`);
-      }
-    },
-    [votingCategories, logActivity, showToast]
-  );
-  const resetCategoryVotes = useCallback(
-    (catId: number) => {
-      setVotingCategories((prev) =>
-        prev.map((c) => (c.id === catId ? { ...c, contestants: c.contestants.map((p) => ({ ...p, votes: 0 })) } : c))
-      );
-      const cat = votingCategories.find((c) => c.id === catId);
-      if (cat) {
-        showToast(`${cat.name} votes reset`, 'danger');
-        logActivity(`Amara Editor reset all votes in ${cat.name}`);
-      }
-    },
-    [votingCategories, logActivity, showToast]
-  );
-  const resetAllVotes = useCallback(() => {
-    setVotingCategories((prev) => prev.map((c) => ({ ...c, contestants: c.contestants.map((p) => ({ ...p, votes: 0 })) })));
-    showToast('All votes reset', 'danger');
-    logActivity('Amara Editor reset votes across all voting categories');
-  }, [logActivity, showToast]);
+  // ---------- requests (read mirror — CRUD lives in BusinessSection) ----------
+  const [requests, setRequests] = useState<RequestsState>(emptyRequests);
+  useEffect(() => {
+    const unsubs = REQ_TYPES.map((type) => {
+      const q = query(collection(db, 'requests', type, 'items'), orderBy('createdAt', 'desc'));
+      return onSnapshot(q, (snap) => {
+        const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setRequests((prev) => ({ ...prev, [type]: docs as any }));
+      });
+    });
+    return () => unsubs.forEach((u) => u());
+  }, []);
 
-  // ---------- products (local demo state — unchanged) ----------
+  // ---------- sponsoredDeals (read mirror — CRUD lives in BusinessSection) ----------
+  const [sponsoredDeals, setSponsoredDeals] = useState<SponsoredDeal[]>([]);
+  useEffect(() => {
+    const q = query(collection(db, 'sponsoredDeals'), orderBy('createdAt', 'desc'));
+    return onSnapshot(q, (snap) => {
+      setSponsoredDeals(
+        snap.docs.map((d) => ({ id: nextId(), ...d.data(), _fsId: d.id } as unknown as SponsoredDeal))
+      );
+    });
+  }, []);
+
+  // ---------- partners (read mirror — CRUD lives in BusinessSection) ----------
+  const [partners, setPartners] = useState<Partner[]>([]);
+  useEffect(() => {
+    const q = query(collection(db, 'partners'), orderBy('createdAt', 'desc'));
+    return onSnapshot(q, (snap) => {
+      setPartners(
+        snap.docs.map((d) => ({ id: nextId(), ...d.data(), _fsId: d.id } as unknown as Partner))
+      );
+    });
+  }, []);
+
+  // ---------- products ----------
+  const [products, setProducts] = useState<Product[]>([]);
+  useEffect(() => {
+    const q = query(collection(db, 'products'), orderBy('createdAt', 'desc'));
+    return onSnapshot(q, (snap) => {
+      setProducts(
+        snap.docs.map((d) => ({ id: nextId(), ...d.data(), _fsId: d.id } as unknown as Product))
+      );
+    });
+  }, []);
+
   const addProduct = useCallback(
-    (payload: Omit<Product, 'id'>) => {
-      setProducts((prev) => [{ id: nextId(), ...payload }, ...prev]);
+    async (payload: Omit<Product, 'id'>) => {
+      await addDoc(collection(db, 'products'), { ...payload, createdAt: serverTimestamp() });
       logActivity(`Amara Editor added product "${payload.name}"`);
       showToast('Product added', 'success');
     },
     [logActivity, showToast]
   );
   const updateProduct = useCallback(
-    (id: number, payload: Omit<Product, 'id'>) => {
-      setProducts((prev) => prev.map((p) => (p.id === id ? { id, ...payload } : p)));
+    async (id: number, payload: Omit<Product, 'id'>) => {
+      const target = products.find((p) => p.id === id) as any;
+      if (target?._fsId) await updateDoc(doc(db, 'products', target._fsId), { ...payload });
       logActivity(`Amara Editor updated product "${payload.name}"`);
       showToast('Product updated', 'success');
     },
-    [logActivity, showToast]
+    [products, logActivity, showToast]
   );
   const deleteProduct = useCallback(
-    (id: number) => {
-      const p = products.find((x) => x.id === id);
-      setProducts((prev) => prev.filter((x) => x.id !== id));
-      if (p) logActivity(`Amara Editor deleted product "${p.name}"`);
+    async (id: number) => {
+      const target = products.find((p) => p.id === id) as any;
+      if (target?._fsId) await deleteDoc(doc(db, 'products', target._fsId));
+      if (target) logActivity(`Amara Editor deleted product "${target.name}"`);
       showToast('Product deleted', 'danger');
     },
     [products, logActivity, showToast]
   );
 
-  // ---------- gallery (local demo state — unchanged) ----------
+  // ---------- gallery ----------
+  const [gallery, setGallery] = useState<GalleryImage[]>([]);
+  useEffect(() => {
+    const q = query(collection(db, 'gallery'), orderBy('order', 'asc'));
+    return onSnapshot(q, (snap) => {
+      setGallery(
+        snap.docs.map((d) => ({ id: nextId(), ...d.data(), _fsId: d.id } as unknown as GalleryImage))
+      );
+    });
+  }, []);
+
   const addGalleryImage = useCallback(
-    (payload: Omit<GalleryImage, 'id'>) => {
-      setGallery((prev) => [...prev, { id: nextId(), ...payload }]);
+    async (payload: Omit<GalleryImage, 'id' | 'order'>) => {
+      const maxOrder = gallery.reduce((m, g) => Math.max(m, g.order ?? 0), 0);
+      await addDoc(collection(db, 'gallery'), {
+        ...payload,
+        order: maxOrder + 1,
+        createdAt: serverTimestamp(),
+      });
       logActivity('Amara Editor added a new image to the Cogvana gallery');
       showToast('Image added', 'success');
     },
-    [logActivity, showToast]
+    [gallery, logActivity, showToast]
   );
-  const moveGalleryImage = useCallback((id: number, dir: -1 | 1) => {
-    setGallery((prev) => {
-      const i = prev.findIndex((g) => g.id === id);
+
+  const moveGalleryImage = useCallback(
+    async (id: number, dir: -1 | 1) => {
+      const sorted = [...gallery].sort((a, b) => a.order - b.order);
+      const i = sorted.findIndex((g) => g.id === id);
       const j = i + dir;
-      if (i < 0 || j < 0 || j >= prev.length) return prev;
-      const next = [...prev];
-      [next[i], next[j]] = [next[j], next[i]];
-      return next;
-    });
-  }, []);
+      if (i < 0 || j < 0 || j >= sorted.length) return;
+      const a = sorted[i] as any;
+      const b = sorted[j] as any;
+      await Promise.all([
+        updateDoc(doc(db, 'gallery', a._fsId), { order: b.order }),
+        updateDoc(doc(db, 'gallery', b._fsId), { order: a.order }),
+      ]);
+    },
+    [gallery]
+  );
+
   const deleteGalleryImage = useCallback(
-    (id: number) => {
-      setGallery((prev) => prev.filter((g) => g.id !== id));
+    async (id: number) => {
+      const target = gallery.find((g) => g.id === id) as any;
+      if (target?._fsId) await deleteDoc(doc(db, 'gallery', target._fsId));
       showToast('Image removed', 'danger');
       logActivity('Amara Editor removed an image from the Cogvana gallery');
     },
-    [logActivity, showToast]
+    [gallery, logActivity, showToast]
   );
-
-  // ---------- ticker (local demo state — unchanged) ----------
-  const addTickerMsg = useCallback(
-    (msg: string) => {
-      if (!msg.trim()) return;
-      setTickerMessages((prev) => [...prev, msg.trim()]);
-      logActivity('Amara Editor added a new site ticker message');
-      showToast('Ticker message added', 'success');
-    },
-    [logActivity, showToast]
-  );
-  const removeTickerMsg = useCallback(
-    (idx: number) => {
-      setTickerMessages((prev) => prev.filter((_, i) => i !== idx));
-      showToast('Ticker message removed', 'danger');
-    },
-    [showToast]
-  );
-
-  const resetDemoData = useCallback(() => {
-    setVotingCategories(createInitialVotingCategories());
-    setProducts(createInitialProducts());
-    setGallery(createInitialGallery());
-    setActivityLog(createInitialActivityLog());
-    setLoginAttempts(createInitialLoginAttempts());
-    setTickerMessages(createInitialTickerMessages());
-    // Note: stories/requests/partners/sponsoredDeals live in Firestore now
-    // and are intentionally NOT reset here to avoid wiping production data.
-  }, []);
 
   const value: AdminDataValue = {
     stories,
@@ -412,14 +373,6 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
     updateStory,
     deleteStory,
     publishStory,
-    votingCategories,
-    saveCategorySchedule,
-    addContestant,
-    updateContestant,
-    deleteContestant,
-    crownWinner,
-    resetCategoryVotes,
-    resetAllVotes,
     requests,
     partners,
     sponsoredDeals,
@@ -443,7 +396,6 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
     confirmState,
     openConfirm,
     closeConfirm,
-    resetDemoData,
   };
 
   return <AdminDataContext.Provider value={value}>{children}</AdminDataContext.Provider>;

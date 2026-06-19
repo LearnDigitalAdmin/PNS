@@ -12,29 +12,6 @@ export interface AdminStory {
   date: string;
 }
 
-export interface Contestant {
-  id: number;
-  name: string;
-  tagline: string;
-  image: string;
-  reward: string;
-  votes: number;
-  winner?: boolean;
-}
-
-export type CategoryStatus = 'open' | 'scheduled' | 'closed';
-
-export interface VotingCategory {
-  id: number;
-  key: string;
-  name: string;
-  icon: string;
-  status: CategoryStatus;
-  opens: string;
-  closes: string;
-  contestants: Contestant[];
-}
-
 export type RequestStatus = 'pending' | 'approved' | 'contacted' | 'rejected';
 
 export interface FeaturedRequest {
@@ -105,6 +82,12 @@ export interface SponsoredDeal {
   budget: string;
   contact: string;
   stage: DealStage;
+  // Public-facing fields for the Sponsored Stories page (optional — filled
+  // in once a deal reaches the 'live' stage and is ready to publish).
+  title?: string;
+  excerpt?: string;
+  image?: string;
+  published?: boolean;
 }
 
 export type PartnerStatus = 'active' | 'pending' | 'suspended';
@@ -115,6 +98,8 @@ export interface Partner {
   category: string;
   status: PartnerStatus;
   email: string;
+  phone?: string;
+  image?: string;
 }
 
 export interface Product {
@@ -124,13 +109,36 @@ export interface Product {
   stock: number;
   category: string;
   image: string;
+  wide?: boolean;
+  digital?: boolean;
 }
+
+export type GallerySection = 'cover' | 'masonry';
 
 export interface GalleryImage {
   id: number;
   image: string;
   caption: string;
   credit: string;
+  section: GallerySection;
+  order: number;
+}
+
+export interface ServiceItem {
+  id: string;
+  image: string;
+  eyebrow: string;
+  title: string;
+  order: number;
+}
+
+export interface Testimonial {
+  id: string;
+  quote: string;
+  image: string;
+  name: string;
+  role: string;
+  order: number;
 }
 
 export interface ActivityLogEntry {

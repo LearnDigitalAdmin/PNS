@@ -38,11 +38,21 @@ import {
 import { subscribeSiteSettings, type SiteSettings, DEFAULT_SITE_SETTINGS } from '../../lib/siteSettings';
 
 export const TOTAL_PAGES = 9;
+export const VOTING_PAGE_INDEX = 2;
 
 export interface VotingClientState {
   position: number;
   voted: boolean;
   concluding: boolean;
+}
+
+/** Result of parsing a `?vote=catKey:contestantId` shared link. */
+export interface SharedVoteTarget {
+  catIdx: number;
+  pos: number;
+  /** Increments each time a new shared link is consumed, so consumers
+   *  (VotingPage) can react even if catIdx/pos repeat. */
+  nonce: number;
 }
 
 interface SiteContextValue {
@@ -88,6 +98,11 @@ interface SiteContextValue {
   prevContestant: (catIdx: number) => void;
   castVote: (catIdx: number) => Promise<void>;
   triggerConclude: (categoryId: string) => Promise<void>;
+
+  // shareable voting links
+  sharedVoteTarget: SharedVoteTarget | null;
+  consumeSharedVoteTarget: () => void;
+  buildShareUrl: (catKey: string, contestantId: string) => string;
 
   // LIVE: gallery / services / testimonials / partners / sponsored / products
   gallery: FSGalleryImage[];
@@ -316,6 +331,83 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // ── Shareable voting links ──────────────────────────────────────────────
+  // URL shape: https://yourdomain/?vote=<categoryKey>:<contestantId>
+  // Parsed once voting categories have loaded, since we need contestant
+  // lists to resolve the position. Safe to ignore if malformed/missing —
+  // falls through to normal app behavior with no errors.
+  const [sharedVoteTarget, setSharedVoteTarget] = useState<SharedVoteTarget | null>(null);
+  const sharedLinkConsumedRef = useRef(false);
+
+  useEffect(() => {
+    if (sharedLinkConsumedRef.current) return;
+    if (votingLoading || votingCategories.length === 0) return;
+
+    let params: URLSearchParams;
+    try {
+      params = new URLSearchParams(window.location.search);
+    } catch {
+      return;
+    }
+
+    const voteParam = params.get('vote');
+    if (!voteParam) {
+      sharedLinkConsumedRef.current = true;
+      return;
+    }
+
+    const sepIdx = voteParam.indexOf(':');
+    if (sepIdx === -1) {
+      sharedLinkConsumedRef.current = true;
+      return;
+    }
+
+    const catKey = voteParam.slice(0, sepIdx);
+    const contestantId = voteParam.slice(sepIdx + 1);
+
+    const catIdx = votingCategories.findIndex((c) => c.key === catKey);
+    if (catIdx === -1) {
+      sharedLinkConsumedRef.current = true;
+      return;
+    }
+
+    const pos = votingCategories[catIdx].contestants.findIndex((c) => c.id === contestantId);
+    if (pos === -1) {
+      // Category resolved but contestant not found yet (contestants may
+      // still be hydrating asynchronously) — don't mark consumed, retry
+      // on next categories update.
+      return;
+    }
+
+    sharedLinkConsumedRef.current = true;
+
+    goToPage(VOTING_PAGE_INDEX);
+    goToContestant(catIdx, pos);
+    setSharedVoteTarget((prev) => ({
+      catIdx,
+      pos,
+      nonce: (prev?.nonce ?? 0) + 1,
+    }));
+
+    // Clean the URL so refreshes/re-shares of the resulting link don't
+    // re-trigger navigation unexpectedly, while leaving history intact.
+    try {
+      window.history.replaceState({}, '', window.location.pathname);
+    } catch {
+      // ignore — non-fatal if history API is unavailable
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [votingLoading, votingCategories, goToPage, goToContestant]);
+
+  const consumeSharedVoteTarget = useCallback(() => {
+    setSharedVoteTarget(null);
+  }, []);
+
+  const buildShareUrl = useCallback((catKey: string, contestantId: string) => {
+    const base = `${window.location.origin}${window.location.pathname}`;
+    return `${base}?vote=${encodeURIComponent(catKey)}:${encodeURIComponent(contestantId)}`;
+  }, []);
+
   // ── LIVE: gallery / services / testimonials / partners / sponsored / products ──
   const [gallery, setGallery] = useState<FSGalleryImage[]>([]);
   const [galleryLoading, setGalleryLoading] = useState(true);
@@ -378,6 +470,7 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
     liveStories, storiesLoading,
     votingCategories, votingLoading, votingClient,
     goToContestant, nextContestant, prevContestant, castVote, triggerConclude,
+    sharedVoteTarget, consumeSharedVoteTarget, buildShareUrl,
     gallery, galleryLoading,
     services, servicesLoading,
     testimonials, testimonialsLoading,

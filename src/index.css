@@ -1419,3 +1419,7 @@ label.field-label-admin {
     transform: translateX(0);
   }
 }
+img[data-fit='contain'] {
+  object-fit: contain !important;
+  background: var(--black, #0a0a0a);
+}

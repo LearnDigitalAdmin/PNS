@@ -89,6 +89,85 @@ function useVoteGate(catKey: string) {
   return { allowed, remainingMs };
 }
 
+// ─── Share button + tiny local "copied" feedback ──────────────────────────────
+
+function ShareContestantButton({
+  category,
+  contestant,
+}: {
+  category: FSVotingCategory;
+  contestant: FSContestant | undefined;
+}) {
+  const { buildShareUrl } = useSite();
+  const [copied, setCopied] = useState(false);
+
+  const handleShare = useCallback(async () => {
+    if (!contestant) return;
+    const url = buildShareUrl(category.key, contestant.id);
+    const shareText = `Vote for ${contestant.name} in ${category.name} on P&S Magazine!`;
+
+    if (typeof navigator !== 'undefined' && (navigator as any).share) {
+      try {
+        await (navigator as any).share({ title: shareText, text: shareText, url });
+        return;
+      } catch {
+        // user cancelled or share failed — fall through to clipboard
+      }
+    }
+
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2200);
+    } catch {
+      // Clipboard API unavailable — last-resort prompt so the link is
+      // still obtainable.
+      window.prompt('Copy this link to share:', url);
+    }
+  }, [buildShareUrl, category.key, category.name, contestant]);
+
+  if (!contestant) return null;
+
+  return (
+    <button
+      onClick={handleShare}
+      style={{
+        marginTop: '.6rem',
+        width: '100%',
+        fontSize: '.66rem',
+        fontWeight: 700,
+        letterSpacing: '.08em',
+        textTransform: 'uppercase',
+        padding: '.55rem',
+        background: 'transparent',
+        border: '1px solid var(--gold)',
+        color: 'var(--gold)',
+        cursor: 'pointer',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '.45rem',
+        transition: 'all .2s',
+      }}
+    >
+      {copied ? (
+        '✓ Link Copied!'
+      ) : (
+        <>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="18" cy="5" r="3" />
+            <circle cx="6" cy="12" r="3" />
+            <circle cx="18" cy="19" r="3" />
+            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+            <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+          </svg>
+          Share &amp; Get Friends To Vote
+        </>
+      )}
+    </button>
+  );
+}
+
 // ─── CategoryPanel ─────────────────────────────────────────────────────────────
 
 interface CategoryPanelProps {
@@ -299,6 +378,11 @@ function CategoryPanel({ catIdx, category, hidden }: CategoryPanelProps) {
             </div>
           )}
 
+          {/* Share this contestant — works whether voting is open, closed,
+              or already voted on this device, so a friend on another
+              device/browser can still land here and cast their own vote. */}
+          <ShareContestantButton category={category} contestant={current} />
+
           {client.voted && !isClosed && (
             <div className="text-center py-2 fade-in-up">
               <p style={{ fontFamily: "'Playfair Display',serif", fontSize: '1rem', color: 'var(--gold)', fontWeight: 700 }}>✦ Vote Cast!</p>
@@ -401,7 +485,7 @@ function VotingSkeleton() {
 // ─── VotingPage ────────────────────────────────────────────────────────────────
 
 export default function VotingPage() {
-  const { votingCategories, votingLoading } = useSite();
+  const { votingCategories, votingLoading, sharedVoteTarget, consumeSharedVoteTarget } = useSite();
   const [activeCat, setActiveCat] = useState(0);
 
   // Keep activeCat in bounds when categories load
@@ -410,6 +494,18 @@ export default function VotingPage() {
       setActiveCat(0);
     }
   }, [votingCategories.length, activeCat]);
+
+  // Land on the right tab when arriving via a shared contestant link.
+  // SiteContext already moves the carousel position for us — this just
+  // makes sure the matching category tab is the active one.
+  useEffect(() => {
+    if (!sharedVoteTarget) return;
+    if (sharedVoteTarget.catIdx < votingCategories.length) {
+      setActiveCat(sharedVoteTarget.catIdx);
+    }
+    consumeSharedVoteTarget();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sharedVoteTarget]);
 
   return (
     <div className="px-5 md:px-10 py-6 max-w-7xl mx-auto">

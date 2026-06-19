@@ -55,6 +55,17 @@ export interface SharedVoteTarget {
   nonce: number;
 }
 
+export interface StoryModalData {
+  title: string;
+  category: string;
+  excerpt?: string;
+  body?: string;
+  image: string;
+  author?: string;
+  date?: string;
+  instagram?: string;
+}
+
 interface SiteContextValue {
   // page engine
   currentPage: number;
@@ -124,6 +135,11 @@ interface SiteContextValue {
   // swipe hint
   swipeHintVisible: boolean;
   hideSwipeHint: () => void;
+
+  // story modal ("Read Story")
+  storyModalData: StoryModalData | null;
+  openStoryModal: (story: StoryModalData) => void;
+  closeStoryModal: () => void;
 }
 
 const SiteContext = createContext<SiteContextValue | null>(null);
@@ -155,7 +171,29 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
   const isModalOpen = useCallback((id: string) => !!modals[id], [modals]);
   const openModal = useCallback((id: string) => setModals((m) => ({ ...m, [id]: true })), []);
   const closeModal = useCallback((id: string) => setModals((m) => ({ ...m, [id]: false })), []);
-  const anyModalOpen = Object.values(modals).some(Boolean);
+  // const anyModalOpen = Object.values(modals).some(Boolean);
+
+  const [storyModalData, setStoryModalData] = useState<StoryModalData | null>(null);
+  const openStoryModal = useCallback((story: StoryModalData) => setStoryModalData(story), []);
+  const closeStoryModal = useCallback(() => setStoryModalData(null), []);
+
+
+  const anyModalOpen = Object.values(modals).some(Boolean) || !!storyModalData;
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setModals({});
+        setStoryModalData(null);
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
+
+  useEffect(() => {
+    document.body.style.overflow = anyModalOpen ? 'hidden' : '';
+  }, [anyModalOpen]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setModals({}); };
@@ -479,6 +517,7 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
     products, productsLoading,
     siteSettings,
     swipeHintVisible, hideSwipeHint,
+    storyModalData, openStoryModal, closeStoryModal,
   };
 
   return <SiteContext.Provider value={value}>{children}</SiteContext.Provider>;

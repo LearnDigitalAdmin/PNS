@@ -30,7 +30,7 @@ export const heroSlides: HeroSlide[] = [
     subtitle: 'Redefining Beauty on Her Own Terms',
     excerpt: "From Westlands to magazine covers — Amara's journey is the story of every woman who dared to believe.",
     ctas: [
-      { label: 'Read Story', action: { type: 'none' } },
+      { label: 'Read Story', action: { type: 'openStory' } },
       { label: 'Vote Now ✦', action: { type: 'goToPage', page: 2 } },
       { label: 'Book A Shoot', action: { type: 'openModal', modal: 'bookModal' } },
       { label: 'Apply To Feature', action: { type: 'openModal', modal: 'applyModal' } },
@@ -44,7 +44,7 @@ export const heroSlides: HeroSlide[] = [
     subtitle: 'A Love That Photographs Itself',
     excerpt: "Ten years, two cities, one incredible love story. Meet Nairobi's most stylish couple.",
     ctas: [
-      { label: 'Read Story', action: { type: 'none' } },
+      { label: 'Read Story', action: { type: 'openStory' } },
       { label: 'Vote Now ✦', action: { type: 'goToPage', page: 2 } },
       { label: 'Book A Shoot', action: { type: 'openModal', modal: 'bookModal' } },
       { label: 'Apply To Feature', action: { type: 'openModal', modal: 'applyModal' } },
@@ -58,7 +58,7 @@ export const heroSlides: HeroSlide[] = [
     subtitle: "Painting Africa's Future in Gold",
     excerpt: 'The Accra-born visual artist changing how the continent sees itself — one canvas at a time.',
     ctas: [
-      { label: 'Read Story', action: { type: 'none' } },
+      { label: 'Read Story', action: { type: 'openStory' } },
       { label: 'Vote Now ✦', action: { type: 'goToPage', page: 2 } },
       { label: 'Book A Shoot', action: { type: 'openModal', modal: 'bookModal' } },
     ],
@@ -72,7 +72,7 @@ export const heroSlides: HeroSlide[] = [
     subtitle: 'The New African Aesthetic',
     excerpt: 'A stunning editorial celebrating African designers reshaping global fashion on their own terms.',
     ctas: [
-      { label: 'View Editorial', action: { type: 'none' } },
+      { label: 'View Editorial', action: { type: 'openStory' } },
       { label: 'Book A Shoot', action: { type: 'openModal', modal: 'bookModal' } },
       { label: 'Apply', action: { type: 'openModal', modal: 'applyModal' } },
     ],
@@ -87,7 +87,7 @@ export const heroSlides: HeroSlide[] = [
     subtitle: 'Where Beauty Becomes Art',
     excerpt: "Inside the salon redefining Nairobi's luxury beauty landscape.",
     ctas: [
-      { label: 'Read Story', action: { type: 'none' } },
+      { label: 'Read Story', action: { type: 'openStory' } },
       { label: 'Book Sponsored Story', action: { type: 'openModal', modal: 'sponsoredModal' } },
     ],
   },

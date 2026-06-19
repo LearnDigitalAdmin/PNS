@@ -16,11 +16,14 @@ interface DisplayStory {
   category: string;
   title: string;
   excerpt?: string;
+  body?: string;
+  author?: string;
+  date?: string;
   cta: string;
 }
 
 export default function StoriesPage() {
-  const { liveStories, storiesLoading } = useSite();
+  const { liveStories, storiesLoading, openStoryModal } = useSite();
 
   // Build display list: use live stories if available, fallback to demo
   const displayStories: DisplayStory[] = storiesLoading || liveStories.length === 0
@@ -40,8 +43,23 @@ export default function StoriesPage() {
         category: s.category,
         title: s.title,
         excerpt: s.excerpt,
+        body: s.body,
+        author: s.author,
+        date: s.date,
         cta: s.isVotingWinner ? 'See Winner →' : 'Read Story',
       }));
+
+  function handleRead(s: DisplayStory) {
+    openStoryModal({
+      title: s.title,
+      category: s.category,
+      excerpt: s.excerpt,
+      body: s.body,
+      image: s.image,
+      author: s.author,
+      date: s.date,
+    });
+  }
 
   const large = displayStories.find((s) => s.size === 'large');
   const mediums = displayStories.filter((s) => s.size === 'medium');
@@ -114,7 +132,9 @@ export default function StoriesPage() {
                 {large.excerpt}
               </p>
             )}
-            <button className="btn-gold mt-3">{large.cta}</button>
+            <button className="btn-gold mt-3" onClick={() => handleRead(large)}>
+              {large.cta}
+            </button>
           </div>
         </div>
 
@@ -137,7 +157,11 @@ export default function StoriesPage() {
                 >
                   {s.title}
                 </h3>
-                <button className="btn-outline-gold mt-2" style={{ fontSize: '.56rem', padding: '.3rem .8rem' }}>
+                <button
+                  className="btn-outline-gold mt-2"
+                  style={{ fontSize: '.56rem', padding: '.3rem .8rem' }}
+                  onClick={() => handleRead(s)}
+                >
                   {s.cta}
                 </button>
               </div>
@@ -163,7 +187,11 @@ export default function StoriesPage() {
               >
                 {s.title}
               </h3>
-              <button className="btn-outline-gold mt-2" style={{ fontSize: '.56rem', padding: '.3rem .8rem' }}>
+              <button
+                className="btn-outline-gold mt-2"
+                style={{ fontSize: '.56rem', padding: '.3rem .8rem' }}
+                onClick={() => handleRead(s)}
+              >
                 {s.cta}
               </button>
             </div>

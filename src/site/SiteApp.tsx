@@ -15,6 +15,7 @@ import PartnersPage from './pages/PartnersPage';
 import SponsoredPage from './pages/SponsoredPage';
 import ShopPage from './pages/ShopPage';
 import BookFooterPage from './pages/BookFooterPage';
+import StoryModal from './components/StoryModal';
 
 const PAGE_COMPONENTS = [HeroPage, StoriesPage, VotingPage, CogvanaPage, ServicesPage, PartnersPage, SponsoredPage, ShopPage, BookFooterPage];
 const PAGE_BG = ['transparent', 'var(--warm-white)', 'var(--black)', 'var(--warm-white)', 'var(--black)', 'var(--warm-white)', 'var(--black)', 'var(--warm-white)', 'var(--warm-white)'];
@@ -186,6 +187,7 @@ export default function SiteApp() {
       <CartSidebar />
       <Lightbox />
       <Modals />
+      <StoryModal />
     </>
   );
 }

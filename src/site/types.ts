@@ -1,3 +1,26 @@
+// export interface HeroSlide {
+//   id: string;
+//   image: string;
+//   badge: string;
+//   badgeType?: 'category' | 'sponsored';
+//   titleLine1: string;
+//   titleLine2?: string;
+//   subtitle: string;
+//   excerpt: string;
+//   ctas: { label: string; action: HeroAction }[];
+// }
+
+// export type HeroAction =
+//   | { type: 'goToPage'; page: number }
+//   | { type: 'openModal'; modal: string }
+//   | { type: 'none' };
+
+  export type HeroAction =
+  | { type: 'goToPage'; page: number }
+  | { type: 'openModal'; modal: string }
+  | { type: 'openStory' }
+  | { type: 'none' };
+
 export interface HeroSlide {
   id: string;
   image: string;
@@ -7,13 +30,11 @@ export interface HeroSlide {
   titleLine2?: string;
   subtitle: string;
   excerpt: string;
+  body?: string;
+  author?: string;
+  date?: string;
   ctas: { label: string; action: HeroAction }[];
 }
-
-export type HeroAction =
-  | { type: 'goToPage'; page: number }
-  | { type: 'openModal'; modal: string }
-  | { type: 'none' };
 
 export interface StoryCard {
   id: string;

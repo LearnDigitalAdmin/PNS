@@ -6,7 +6,7 @@ import { FSStory } from '../../lib/firebaseVoting';
 
 
 // Convert a live FSStory into the hero slide shape
-function storyToSlide(s: FSStory, goToPage: (n: number) => void, openModal: (id: string) => void) {
+function storyToSlide(s: FSStory) {
   return {
     id: s.id,
     image: s.image || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=1600&q=80',
@@ -16,22 +16,27 @@ function storyToSlide(s: FSStory, goToPage: (n: number) => void, openModal: (id:
     titleLine2: undefined as string | undefined,
     subtitle: s.excerpt ?? '',
     excerpt: s.body ? s.body.slice(0, 160) : '',
+    body: s.body,
+    author: s.author,
+    date: s.date,
     ctas: [
-      { label: s.isVotingWinner ? 'See Full Story' : 'Read Story', action: { type: 'none' as const } },
+      { label: s.isVotingWinner ? 'See Full Story' : 'Read Story', action: { type: 'openStory' as const } },
       { label: 'Vote Now ✦', action: { type: 'goToPage' as const, page: 2 } },
       { label: 'Book A Shoot', action: { type: 'openModal' as const, modal: 'bookModal' } },
     ],
   };
 }
 
+type HeroSlideData = ReturnType<typeof storyToSlide> | (typeof demoSlides)[number];
+
 export default function HeroPage() {
-  const { liveStories, storiesLoading, goToPage, openModal } = useSite();
+  const { liveStories, storiesLoading, goToPage, openModal, openStoryModal } = useSite();
   const [slide, setSlide] = useState(0);
   const barRef = useRef<HTMLDivElement>(null);
 
   // Build slides from live stories, fall back to demo if none yet
-  const slides = (!storiesLoading && liveStories.length > 0)
-    ? liveStories.slice(0, 5).map((s) => storyToSlide(s, goToPage, openModal))
+  const slides: HeroSlideData[] = (!storiesLoading && liveStories.length > 0)
+    ? liveStories.slice(0, 5).map((s) => storyToSlide(s))
     : demoSlides;
 
   // Reset to slide 0 when slide list changes (e.g. first load)
@@ -57,9 +62,20 @@ export default function HeroPage() {
     return () => clearInterval(id);
   }, [slides.length]);
 
-  function runAction(action: HeroAction) {
+  function runAction(action: HeroAction, s: HeroSlideData) {
     if (action.type === 'goToPage') goToPage(action.page);
     if (action.type === 'openModal') openModal(action.modal);
+    if (action.type === 'openStory') {
+      openStoryModal({
+        title: s.titleLine1 + (s.titleLine2 ? ' ' + s.titleLine2 : ''),
+        category: s.badge,
+        excerpt: s.subtitle,
+        body: (s as ReturnType<typeof storyToSlide>).body,
+        image: s.image,
+        author: (s as ReturnType<typeof storyToSlide>).author,
+        date: (s as ReturnType<typeof storyToSlide>).date,
+      });
+    }
   }
 
   return (
@@ -113,7 +129,7 @@ export default function HeroPage() {
                   return (
                     <button
                       key={cta.label}
-                      onClick={() => runAction(cta.action)}
+                      onClick={() => runAction(cta.action, s)}
                       className={cls}
                       style={cls === 'btn-dark' ? { border: '1px solid rgba(247,244,239,.22)' } : undefined}
                     >

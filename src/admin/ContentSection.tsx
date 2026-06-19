@@ -6,6 +6,7 @@ import { ICONS, EmptyState } from './icons';
 import type { AdminStory, StoryStatus, GallerySection } from './types';
 import VotingTab from './context/votingTab';
 import ServicesTestimonialsTab from './ServicesTestimonialsTab';
+import { MarkdownEditor } from './MarkdownEditor';
 
 // ─────────────────────────────────────────────
 // Shared image-upload hook
@@ -407,13 +408,23 @@ function StoriesTab() {
                 onChange={(e) => setForm({ ...form, excerpt: e.target.value })}
               />
             </div>
-            <div>
+            {/* <div>
               <label className="field-label-admin">Full Story Body</label>
               <textarea
                 className="form-input-admin"
                 rows={4}
                 value={form.body}
                 onChange={(e) => setForm({ ...form, body: e.target.value })}
+              />
+            </div> */}
+
+            <div>
+              <label className="field-label-admin">Full Story Body</label>
+              <MarkdownEditor
+                value={form.body}
+                onChange={(body) => setForm({ ...form, body })}
+                rows={7}
+                placeholder="Write the full story…"
               />
             </div>
             <div className="grid grid-cols-2 gap-3">

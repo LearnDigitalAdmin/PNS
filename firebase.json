@@ -23,7 +23,8 @@
     }
   ],
   "hosting": {
-    "public": "public",
+    "site": "pns-site",
+    "public": "dist",
     "ignore": [
       "firebase.json",
       "**/.*",

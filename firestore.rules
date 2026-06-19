@@ -5,6 +5,64 @@ service cloud.firestore {
   	match /{document=**} {
   	allow read, write: if true;
   	}
+
+    function isAdmin() {
+      return request.auth != null &&
+             request.auth.token.email.matches('.*@cogvana\\.co\\.ke');
+    }
+
+    function isValidRequest() {
+      let d = request.resource.data;
+      return d.keys().hasAll(['status', 'date', 'createdAt'])
+          && d.status == 'pending';
+    }
+
+    // ── Public request submissions (subcollection pattern) ────────────────
+    // Clients can only CREATE (write) new pending requests.
+    // Only admins can read, update (change status), or delete.
+
+    match /requests/{type}/items/{itemId} {
+      allow create: if isValidRequest();
+      allow read, update, delete: if isAdmin();
+    }
+
+    // ── Stories ──────────────────────────────────────────────────────────────
+    // Public read (site displays live stories); admin writes.
+    match /stories/{storyId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ── Partners ─────────────────────────────────────────────────────────────
+    match /partners/{partnerId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ── Sponsored deals pipeline ─────────────────────────────────────────────
+    match /sponsoredDeals/{dealId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // ── Gallery ──────────────────────────────────────────────────────────────
+    match /gallery/{imgId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ── Products / shop ──────────────────────────────────────────────────────
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ── Voting categories (admin-managed, public read for display) ────────────
+    match /votingCategories/{catId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    
     // match /users/{userId} {
     // 	allow read: if true;
     //   allow write, delete, update: if request.auth != null;

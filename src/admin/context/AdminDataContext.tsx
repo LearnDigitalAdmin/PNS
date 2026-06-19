@@ -1,10 +1,19 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import {
-  createInitialStories,
+  collection,
+  onSnapshot,
+  doc,
+  updateDoc,
+  deleteDoc,
+  addDoc,
+  setDoc,
+  serverTimestamp,
+  query,
+  orderBy,
+} from 'firebase/firestore';
+import { db } from '../../lib/firebase';
+import {
   createInitialVotingCategories,
-  createInitialRequests,
-  createInitialSponsoredDeals,
-  createInitialPartners,
   createInitialProducts,
   createInitialGallery,
   createInitialActivityLog,
@@ -42,6 +51,8 @@ export interface ConfirmState {
   onConfirm: () => void;
 }
 
+const REQ_TYPES: RequestType[] = ['featured', 'booking', 'sponsored', 'partnership', 'mediaKit'];
+
 interface AdminDataValue {
   stories: AdminStory[];
   addStory: (payload: Omit<AdminStory, 'id'>) => void;
@@ -58,20 +69,13 @@ interface AdminDataValue {
   resetCategoryVotes: (catId: number) => void;
   resetAllVotes: () => void;
 
+  // NOTE: requests/partners/sponsoredDeals are now Firestore-backed and
+  // read-only here (BusinessSection manages live CRUD on its own
+  // subscriptions). These mirrors exist purely so Overview/System can
+  // display accurate, real-time counts without duplicating logic.
   requests: RequestsState;
-  setRequestStatus: (type: RequestType, id: number, status: RequestStatus) => void;
-  deleteRequest: (type: RequestType, id: number) => void;
-
-  sponsoredDeals: SponsoredDeal[];
-  addSponsoredDeal: (payload: Omit<SponsoredDeal, 'id'>) => void;
-  moveDealStage: (id: number) => void;
-  deleteDeal: (id: number) => void;
-
   partners: Partner[];
-  addPartner: (payload: Omit<Partner, 'id'>) => void;
-  updatePartner: (id: number, payload: Omit<Partner, 'id'>) => void;
-  deletePartner: (id: number) => void;
-  setPartnerStatus: (id: number, status: PartnerStatus) => void;
+  sponsoredDeals: SponsoredDeal[];
 
   products: Product[];
   addProduct: (payload: Omit<Product, 'id'>) => void;
@@ -105,12 +109,64 @@ interface AdminDataValue {
 
 const AdminDataContext = createContext<AdminDataValue | null>(null);
 
+const emptyRequests = (): RequestsState => ({
+  featured: [],
+  booking: [],
+  sponsored: [],
+  partnership: [],
+  mediaKit: [],
+});
+
 export function AdminDataProvider({ children }: { children: React.ReactNode }) {
-  const [stories, setStories] = useState<AdminStory[]>(createInitialStories);
+  // ---------- Firestore-backed: stories ----------
+  const [stories, setStories] = useState<AdminStory[]>([]);
+  useEffect(() => {
+    const q = query(collection(db, 'stories'), orderBy('createdAt', 'desc'));
+    return onSnapshot(q, (snap) => {
+      setStories(
+        snap.docs.map((d) => {
+          const data = d.data();
+          return { id: nextId(), ...data, _fsId: d.id } as unknown as AdminStory;
+        })
+      );
+    });
+  }, []);
+
+  // ---------- Local-only: voting (kept in-memory, demo-seeded) ----------
   const [votingCategories, setVotingCategories] = useState<VotingCategory[]>(createInitialVotingCategories);
-  const [requests, setRequests] = useState<RequestsState>(createInitialRequests);
-  const [sponsoredDeals, setSponsoredDeals] = useState<SponsoredDeal[]>(createInitialSponsoredDeals);
-  const [partners, setPartners] = useState<Partner[]>(createInitialPartners);
+
+  // ---------- Firestore-backed: requests (read mirror for Overview/System) ----------
+  const [requests, setRequests] = useState<RequestsState>(emptyRequests);
+  useEffect(() => {
+    const unsubs = REQ_TYPES.map((type) => {
+      const q = query(collection(db, 'requests', type, 'items'), orderBy('createdAt', 'desc'));
+      return onSnapshot(q, (snap) => {
+        const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setRequests((prev) => ({ ...prev, [type]: docs as any }));
+      });
+    });
+    return () => unsubs.forEach((u) => u());
+  }, []);
+
+  // ---------- Firestore-backed: sponsoredDeals ----------
+  const [sponsoredDeals, setSponsoredDeals] = useState<SponsoredDeal[]>([]);
+  useEffect(() => {
+    const q = query(collection(db, 'sponsoredDeals'), orderBy('createdAt', 'desc'));
+    return onSnapshot(q, (snap) => {
+      setSponsoredDeals(snap.docs.map((d) => ({ id: nextId(), ...d.data(), _fsId: d.id } as unknown as SponsoredDeal)));
+    });
+  }, []);
+
+  // ---------- Firestore-backed: partners ----------
+  const [partners, setPartners] = useState<Partner[]>([]);
+  useEffect(() => {
+    const q = query(collection(db, 'partners'), orderBy('createdAt', 'desc'));
+    return onSnapshot(q, (snap) => {
+      setPartners(snap.docs.map((d) => ({ id: nextId(), ...d.data(), _fsId: d.id } as unknown as Partner)));
+    });
+  }, []);
+
+  // ---------- Local-only demo data: products / gallery / activity / login / ticker ----------
   const [products, setProducts] = useState<Product[]>(createInitialProducts);
   const [gallery, setGallery] = useState<GalleryImage[]>(createInitialGallery);
   const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>(createInitialActivityLog);
@@ -124,10 +180,12 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const logLoginAttempt = useCallback((email: string, status: LoginAttempt['status'], device: string) => {
-    setLoginAttempts((prev) => [
-      { email, status, location: status === 'success' ? 'Nairobi, KE' : 'Unknown location', device, time: 'just now' },
-      ...prev,
-    ].slice(0, 12));
+    setLoginAttempts((prev) =>
+      [
+        { email, status, location: status === 'success' ? 'Nairobi, KE' : 'Unknown location', device, time: 'just now' },
+        ...prev,
+      ].slice(0, 12)
+    );
   }, []);
 
   const showToast = useCallback((message: string, type: ToastType = 'info') => {
@@ -141,53 +199,50 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
   }, []);
   const closeConfirm = useCallback(() => setConfirmState(null), []);
 
-  // ---------- stories ----------
+  // ---------- stories (Firestore writes) ----------
   const addStory = useCallback(
-    (payload: Omit<AdminStory, 'id'>) => {
-      setStories((prev) => [{ id: nextId(), ...payload }, ...prev]);
+    async (payload: Omit<AdminStory, 'id'>) => {
+      await addDoc(collection(db, 'stories'), { ...payload, createdAt: serverTimestamp() });
       logActivity(`Amara Editor created a new story "${payload.title}"`);
       showToast('Story added', 'success');
     },
     [logActivity, showToast]
   );
   const updateStory = useCallback(
-    (id: number, payload: Omit<AdminStory, 'id'>) => {
-      setStories((prev) => prev.map((s) => (s.id === id ? { id, ...payload } : s)));
+    async (id: number, payload: Omit<AdminStory, 'id'>) => {
+      const target = stories.find((s) => s.id === id) as any;
+      if (target?._fsId) {
+        await updateDoc(doc(db, 'stories', target._fsId), { ...payload });
+      }
       logActivity(`Amara Editor updated story "${payload.title}"`);
       showToast('Story updated', 'success');
     },
-    [logActivity, showToast]
+    [stories, logActivity, showToast]
   );
   const deleteStory = useCallback(
-    (id: number) => {
-      setStories((prev) => {
-        const target = prev.find((s) => s.id === id);
-        if (target) logActivity(`Amara Editor deleted story "${target.title}"`);
-        return prev.filter((s) => s.id !== id);
-      });
+    async (id: number) => {
+      const target = stories.find((s) => s.id === id) as any;
+      if (target?._fsId) {
+        await deleteDoc(doc(db, 'stories', target._fsId));
+      }
+      if (target) logActivity(`Amara Editor deleted story "${target.title}"`);
       showToast('Story deleted', 'danger');
     },
-    [logActivity, showToast]
+    [stories, logActivity, showToast]
   );
   const publishStory = useCallback(
-    (id: number) => {
-      setStories((prev) =>
-        prev.map((s) =>
-          s.id === id
-            ? { ...s, status: 'live', date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) }
-            : s
-        )
-      );
-      const target = stories.find((s) => s.id === id);
-      if (target) {
-        logActivity(`Amara Editor published "${target.title}"`);
-        showToast(`"${target.title}" is now live`, 'success');
-      }
+    async (id: number) => {
+      const target = stories.find((s) => s.id === id) as any;
+      if (!target?._fsId) return;
+      const date = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      await updateDoc(doc(db, 'stories', target._fsId), { status: 'live', date });
+      logActivity(`Amara Editor published "${target.title}"`);
+      showToast(`"${target.title}" is now live`, 'success');
     },
     [stories, logActivity, showToast]
   );
 
-  // ---------- voting ----------
+  // ---------- voting (local demo state — unchanged behavior) ----------
   const saveCategorySchedule = useCallback(
     (catId: number, opens: string, closes: string, status: VotingCategory['status']) => {
       setVotingCategories((prev) => prev.map((c) => (c.id === catId ? { ...c, opens, closes, status } : c)));
@@ -267,101 +322,7 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
     logActivity('Amara Editor reset votes across all voting categories');
   }, [logActivity, showToast]);
 
-  // ---------- requests ----------
-  const setRequestStatus = useCallback(
-    (type: RequestType, id: number, status: RequestStatus) => {
-      setRequests((prev) => ({
-        ...prev,
-        [type]: (prev[type] as any[]).map((r) => (r.id === id ? { ...r, status } : r)),
-      }));
-      const item = (requests[type] as any[]).find((r) => r.id === id);
-      const name = item ? item.name ?? item.business ?? item.company ?? '—' : '—';
-      logActivity(`Amara Editor marked ${name}'s ${REQUEST_TYPE_LABELS[type].toLowerCase()} as ${status}`);
-      showToast(`${name} marked as ${status}`, status === 'rejected' ? 'danger' : 'success');
-    },
-    [requests, logActivity, showToast]
-  );
-  const deleteRequest = useCallback(
-    (type: RequestType, id: number) => {
-      setRequests((prev) => ({ ...prev, [type]: (prev[type] as any[]).filter((r) => r.id !== id) }));
-      showToast('Request deleted', 'danger');
-      logActivity(`Amara Editor deleted a ${REQUEST_TYPE_LABELS[type].toLowerCase()} entry`);
-    },
-    [logActivity, showToast]
-  );
-
-  // ---------- sponsored deals ----------
-  const addSponsoredDeal = useCallback(
-    (payload: Omit<SponsoredDeal, 'id'>) => {
-      setSponsoredDeals((prev) => [...prev, { id: nextId(), ...payload }]);
-      logActivity(`Amara Editor added sponsored deal "${payload.business}"`);
-      showToast('Sponsored deal added', 'success');
-    },
-    [logActivity, showToast]
-  );
-  const STAGE_ORDER: DealStage[] = ['inquiry', 'production', 'live', 'completed'];
-  const moveDealStage = useCallback(
-    (id: number) => {
-      const deal = sponsoredDeals.find((d) => d.id === id);
-      if (!deal) return;
-      const idx = STAGE_ORDER.indexOf(deal.stage);
-      if (idx >= STAGE_ORDER.length - 1) return;
-      const nextStage = STAGE_ORDER[idx + 1];
-      setSponsoredDeals((prev) => prev.map((d) => (d.id === id ? { ...d, stage: nextStage } : d)));
-      logActivity(`"${deal.business}" moved to ${nextStage}`);
-      showToast(`Moved to ${nextStage}`, 'success');
-    },
-    [sponsoredDeals, logActivity, showToast]
-  );
-  const deleteDeal = useCallback(
-    (id: number) => {
-      const deal = sponsoredDeals.find((d) => d.id === id);
-      setSponsoredDeals((prev) => prev.filter((d) => d.id !== id));
-      if (deal) logActivity(`Amara Editor removed sponsored deal "${deal.business}"`);
-      showToast('Deal removed', 'danger');
-    },
-    [sponsoredDeals, logActivity, showToast]
-  );
-
-  // ---------- partners ----------
-  const addPartner = useCallback(
-    (payload: Omit<Partner, 'id'>) => {
-      setPartners((prev) => [{ id: nextId(), ...payload }, ...prev]);
-      logActivity(`Amara Editor added new partner: ${payload.name}`);
-      showToast('Partner added', 'success');
-    },
-    [logActivity, showToast]
-  );
-  const updatePartner = useCallback(
-    (id: number, payload: Omit<Partner, 'id'>) => {
-      setPartners((prev) => prev.map((p) => (p.id === id ? { id, ...payload } : p)));
-      logActivity(`Amara Editor updated partner "${payload.name}"`);
-      showToast('Partner updated', 'success');
-    },
-    [logActivity, showToast]
-  );
-  const deletePartner = useCallback(
-    (id: number) => {
-      const p = partners.find((x) => x.id === id);
-      setPartners((prev) => prev.filter((x) => x.id !== id));
-      if (p) logActivity(`Amara Editor removed partner "${p.name}"`);
-      showToast('Partner removed', 'danger');
-    },
-    [partners, logActivity, showToast]
-  );
-  const setPartnerStatus = useCallback(
-    (id: number, status: PartnerStatus) => {
-      setPartners((prev) => prev.map((p) => (p.id === id ? { ...p, status } : p)));
-      const p = partners.find((x) => x.id === id);
-      if (p) {
-        showToast(`${p.name} ${status === 'active' ? 'reactivated' : 'suspended'}`, status === 'active' ? 'success' : 'danger');
-        logActivity(`Amara Editor ${status === 'active' ? 'reactivated' : 'suspended'} partner "${p.name}"`);
-      }
-    },
-    [partners, logActivity, showToast]
-  );
-
-  // ---------- products ----------
+  // ---------- products (local demo state — unchanged) ----------
   const addProduct = useCallback(
     (payload: Omit<Product, 'id'>) => {
       setProducts((prev) => [{ id: nextId(), ...payload }, ...prev]);
@@ -388,7 +349,7 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
     [products, logActivity, showToast]
   );
 
-  // ---------- gallery ----------
+  // ---------- gallery (local demo state — unchanged) ----------
   const addGalleryImage = useCallback(
     (payload: Omit<GalleryImage, 'id'>) => {
       setGallery((prev) => [...prev, { id: nextId(), ...payload }]);
@@ -416,7 +377,7 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
     [logActivity, showToast]
   );
 
-  // ---------- ticker ----------
+  // ---------- ticker (local demo state — unchanged) ----------
   const addTickerMsg = useCallback(
     (msg: string) => {
       if (!msg.trim()) return;
@@ -435,16 +396,14 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
   );
 
   const resetDemoData = useCallback(() => {
-    setStories(createInitialStories());
     setVotingCategories(createInitialVotingCategories());
-    setRequests(createInitialRequests());
-    setSponsoredDeals(createInitialSponsoredDeals());
-    setPartners(createInitialPartners());
     setProducts(createInitialProducts());
     setGallery(createInitialGallery());
     setActivityLog(createInitialActivityLog());
     setLoginAttempts(createInitialLoginAttempts());
     setTickerMessages(createInitialTickerMessages());
+    // Note: stories/requests/partners/sponsoredDeals live in Firestore now
+    // and are intentionally NOT reset here to avoid wiping production data.
   }, []);
 
   const value: AdminDataValue = {
@@ -462,17 +421,8 @@ export function AdminDataProvider({ children }: { children: React.ReactNode }) {
     resetCategoryVotes,
     resetAllVotes,
     requests,
-    setRequestStatus,
-    deleteRequest,
-    sponsoredDeals,
-    addSponsoredDeal,
-    moveDealStage,
-    deleteDeal,
     partners,
-    addPartner,
-    updatePartner,
-    deletePartner,
-    setPartnerStatus,
+    sponsoredDeals,
     products,
     addProduct,
     updateProduct,

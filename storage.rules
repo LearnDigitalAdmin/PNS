@@ -7,6 +7,49 @@ service firebase.storage {
       allow read: if true;
     }
 
+    function isAdmin() {
+      return request.auth != null &&
+             request.auth.token.email.matches('.*@cogvana\\.co\\.ke');
+    }
+
+    function isValidImageUpload() {
+      return request.resource.size < 10 * 1024 * 1024 // 10 MB max
+          && request.resource.contentType.matches('image/(jpeg|jpg|png)');
+    }
+
+    // ── Public application uploads (Apply to Feature form) ───────────────────
+    // Anonymous visitors can upload exactly one image per submission;
+    // enforced as JPG/JPEG/PNG, 10 MB max, at the client too.
+    match /applications/{appType}/{allPaths=**} {
+      allow create: if isValidImageUpload();
+      allow read: if true;
+      allow update, delete: if isAdmin();
+    }
+
+    // ── Generic legacy uploads folder (kept for backwards-compat) ─────────────
+    match /uploads/{allPaths=**} {
+      allow write: if isValidImageUpload();
+      allow read: if true;
+    }
+
+    // ── Products / stories / contestants / gallery — admin uploads only ──────
+    match /products/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin() && isValidImageUpload();
+    }
+    match /stories/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin() && isValidImageUpload();
+    }
+    match /contestants/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin() && isValidImageUpload();
+    }
+    match /gallery/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin() && isValidImageUpload();
+    }
+
     // products folder - public read, no write
     match /products/{allPaths=**} {
       allow read: if true;

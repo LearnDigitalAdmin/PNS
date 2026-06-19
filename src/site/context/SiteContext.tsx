@@ -1,15 +1,37 @@
-import React, { createContext, useContext, useState, useRef, useCallback, useEffect } from 'react';
-import { votingCategories } from '../data';
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useRef,
+  useCallback,
+  useEffect,
+} from 'react';
 import type { CartItem } from '../types';
+import {
+  subscribeToVotingCategories,
+  subscribeToLiveStories,
+  castVoteInFirestore,
+  concludeContest,
+  type FSVotingCategory,
+  type FSStory,
+} from '../../lib/firebaseVoting';
+import {
+  canPerformAction,
+  recordAction,
+  type ActionKey,
+} from '../../lib/fingerprint';
 
 export const TOTAL_PAGES = 9;
 
-interface VotingState {
-  position: number;
-  voted: boolean;
-  votes: number;
-  barWidth: number;
+// ─── Voting state per category (client-side overlay) ─────────────────────────
+
+export interface VotingClientState {
+  position: number;      // which contestant is shown in the carousel
+  voted: boolean;        // voted this session (also checked via fingerprint)
+  concluding: boolean;   // true while conclusion is running
 }
+
+// ─── Context shape ────────────────────────────────────────────────────────────
 
 interface SiteContextValue {
   // page engine
@@ -40,12 +62,19 @@ interface SiteContextValue {
   openLightbox: (src: string) => void;
   closeLightbox: () => void;
 
-  // voting
-  voting: VotingState[];
+  // LIVE: stories from Firestore
+  liveStories: FSStory[];
+  storiesLoading: boolean;
+
+  // LIVE: voting categories from Firestore
+  votingCategories: FSVotingCategory[];
+  votingLoading: boolean;
+  votingClient: VotingClientState[];
   goToContestant: (catIdx: number, pos: number) => void;
   nextContestant: (catIdx: number) => void;
   prevContestant: (catIdx: number) => void;
-  castVote: (catIdx: number) => void;
+  castVote: (catIdx: number) => Promise<void>;
+  triggerConclude: (categoryId: string) => Promise<void>;
 
   // swipe hint
   swipeHintVisible: boolean;
@@ -54,7 +83,10 @@ interface SiteContextValue {
 
 const SiteContext = createContext<SiteContextValue | null>(null);
 
+// ─── Provider ─────────────────────────────────────────────────────────────────
+
 export function SiteProvider({ children }: { children: React.ReactNode }) {
+  // ── Page engine ──────────────────────────────────────────────────────────
   const [currentPage, setCurrentPage] = useState(0);
   const animatingRef = useRef(false);
 
@@ -66,36 +98,33 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
     setCurrentPage((cur) => {
       if (next === cur) return cur;
       animatingRef.current = true;
-      setTimeout(() => {
-        animatingRef.current = false;
-      }, 700);
+      setTimeout(() => { animatingRef.current = false; }, 700);
       return next;
     });
   }, []);
 
+  // ── Mobile menu ──────────────────────────────────────────────────────────
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const toggleMobileMenu = useCallback(() => setMobileMenuOpen((v) => !v), []);
 
+  // ── Modals ───────────────────────────────────────────────────────────────
   const [modals, setModals] = useState<Record<string, boolean>>({});
   const isModalOpen = useCallback((id: string) => !!modals[id], [modals]);
   const openModal = useCallback((id: string) => setModals((m) => ({ ...m, [id]: true })), []);
   const closeModal = useCallback((id: string) => setModals((m) => ({ ...m, [id]: false })), []);
   const anyModalOpen = Object.values(modals).some(Boolean);
 
-  // Escape key closes all modals (matches original global keydown handler)
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setModals({});
-    };
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setModals({}); };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
   }, []);
 
-  // body scroll lock while any modal is active
   useEffect(() => {
     document.body.style.overflow = anyModalOpen ? 'hidden' : '';
   }, [anyModalOpen]);
 
+  // ── Cart ─────────────────────────────────────────────────────────────────
   const [cart, setCart] = useState<CartItem[]>([]);
   const [cartVisible, setCartVisible] = useState(false);
   const [checkoutSuccess, setCheckoutSuccess] = useState(false);
@@ -123,104 +152,156 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const checkoutCart = useCallback(() => {
-    setTimeout(() => {
-      setCart([]);
-      setCheckoutSuccess(true);
-    }, 800);
+    setTimeout(() => { setCart([]); setCheckoutSuccess(true); }, 800);
   }, []);
 
+  // ── Lightbox ─────────────────────────────────────────────────────────────
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   const openLightbox = useCallback((src: string) => setLightboxSrc(src), []);
   const closeLightbox = useCallback(() => setLightboxSrc(null), []);
 
-  const [voting, setVoting] = useState<VotingState[]>(
-    votingCategories.map((c) => ({ position: 0, voted: false, votes: c.initialVotes, barWidth: c.initialBarWidth }))
-  );
+  // ── LIVE: stories ────────────────────────────────────────────────────────
+  const [liveStories, setLiveStories] = useState<FSStory[]>([]);
+  const [storiesLoading, setStoriesLoading] = useState(true);
 
+  useEffect(() => {
+    const unsub = subscribeToLiveStories((stories) => {
+      setLiveStories(stories);
+      setStoriesLoading(false);
+    });
+    return unsub;
+  }, []);
+
+  // ── LIVE: voting categories ───────────────────────────────────────────────
+  const [votingCategories, setVotingCategories] = useState<FSVotingCategory[]>([]);
+  const [votingLoading, setVotingLoading] = useState(true);
+  const [votingClient, setVotingClient] = useState<VotingClientState[]>([]);
+  const concludingRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const unsub = subscribeToVotingCategories((cats) => {
+      setVotingCategories(cats);
+      setVotingLoading(false);
+
+      // Initialise client state for new categories
+      setVotingClient((prev) => {
+        const next = cats.map((cat, i) => prev[i] ?? {
+          position: 0,
+          voted: false,
+          concluding: false,
+        });
+        return next;
+      });
+
+      // Auto-conclude any overdue open categories
+      const now = Date.now();
+      cats.forEach((cat) => {
+        if (
+          cat.status === 'open' &&
+          !cat.concluded &&
+          cat.closes &&
+          cat.closes.toMillis() <= now &&
+          !concludingRef.current.has(cat.id)
+        ) {
+          concludingRef.current.add(cat.id);
+          concludeContest(cat.id).finally(() => {
+            concludingRef.current.delete(cat.id);
+          });
+        }
+      });
+    });
+    return unsub;
+  }, []);
+
+  // ── Voting client actions ─────────────────────────────────────────────────
   const goToContestant = useCallback((catIdx: number, pos: number) => {
-    setVoting((prev) => {
+    setVotingClient((prev) => {
       const next = [...prev];
-      next[catIdx] = { ...next[catIdx], position: pos };
+      if (next[catIdx]) next[catIdx] = { ...next[catIdx], position: pos };
       return next;
     });
   }, []);
 
-  const nextContestant = useCallback(
-    (catIdx: number) => {
-      const total = votingCategories[catIdx].contestants.length;
-      setVoting((prev) => {
-        const next = [...prev];
-        next[catIdx] = { ...next[catIdx], position: (next[catIdx].position + 1) % total };
-        return next;
-      });
-    },
-    []
-  );
-
-  const prevContestant = useCallback(
-    (catIdx: number) => {
-      const total = votingCategories[catIdx].contestants.length;
-      setVoting((prev) => {
-        const next = [...prev];
-        next[catIdx] = { ...next[catIdx], position: (next[catIdx].position - 1 + total) % total };
-        return next;
-      });
-    },
-    []
-  );
-
-  const castVote = useCallback((catIdx: number) => {
-    setVoting((prev) => {
-      if (prev[catIdx].voted) return prev;
+  const nextContestant = useCallback((catIdx: number) => {
+    setVotingClient((prev) => {
       const next = [...prev];
-      next[catIdx] = {
-        ...next[catIdx],
-        voted: true,
-        votes: next[catIdx].votes + 1,
-        barWidth: Math.min(next[catIdx].barWidth + 4, 98),
-      };
+      const cat = votingCategories[catIdx];
+      if (!cat || !next[catIdx]) return prev;
+      const total = cat.contestants.length;
+      next[catIdx] = { ...next[catIdx], position: (next[catIdx].position + 1) % total };
       return next;
     });
+  }, [votingCategories]);
+
+  const prevContestant = useCallback((catIdx: number) => {
+    setVotingClient((prev) => {
+      const next = [...prev];
+      const cat = votingCategories[catIdx];
+      if (!cat || !next[catIdx]) return prev;
+      const total = cat.contestants.length;
+      next[catIdx] = { ...next[catIdx], position: (next[catIdx].position - 1 + total) % total };
+      return next;
+    });
+  }, [votingCategories]);
+
+  const castVote = useCallback(async (catIdx: number) => {
+    const cat = votingCategories[catIdx];
+    const client = votingClient[catIdx];
+    if (!cat || !client || client.voted) return;
+    if (cat.status !== 'open') return;
+
+    const actionKey = `vote_${cat.key}` as ActionKey;
+    const allowed = await canPerformAction(actionKey);
+    if (!allowed) return;
+
+    const current = cat.contestants[client.position];
+    if (!current) return;
+
+    try {
+      await castVoteInFirestore(cat.id, current.id);
+      await recordAction(actionKey);
+      setVotingClient((prev) => {
+        const next = [...prev];
+        if (next[catIdx]) next[catIdx] = { ...next[catIdx], voted: true };
+        return next;
+      });
+    } catch (err) {
+      console.error('Vote failed:', err);
+    }
+  }, [votingCategories, votingClient]);
+
+  const triggerConclude = useCallback(async (categoryId: string) => {
+    if (concludingRef.current.has(categoryId)) return;
+    concludingRef.current.add(categoryId);
+    try {
+      await concludeContest(categoryId);
+    } finally {
+      concludingRef.current.delete(categoryId);
+    }
   }, []);
 
+  // ── Swipe hint ───────────────────────────────────────────────────────────
   const [swipeHintVisible, setSwipeHintVisible] = useState(true);
   const hideSwipeHint = useCallback(() => setSwipeHintVisible(false), []);
+
   useEffect(() => {
     const t = setTimeout(() => setSwipeHintVisible(false), 5500);
-    const onFirstInteract = () => hideSwipeHint();
-    document.addEventListener('click', onFirstInteract, { once: true });
-    return () => {
-      clearTimeout(t);
-      document.removeEventListener('click', onFirstInteract);
-    };
+    const onFirst = () => hideSwipeHint();
+    document.addEventListener('click', onFirst, { once: true });
+    return () => { clearTimeout(t); document.removeEventListener('click', onFirst); };
   }, [hideSwipeHint]);
 
+  // ── Value ────────────────────────────────────────────────────────────────
   const value: SiteContextValue = {
-    currentPage,
-    goToPage,
-    mobileMenuOpen,
-    toggleMobileMenu,
-    isModalOpen,
-    openModal,
-    closeModal,
-    anyModalOpen,
-    cart,
-    cartVisible,
-    addToCart,
-    changeQty,
-    toggleCart,
-    checkoutCart,
-    checkoutSuccess,
-    lightboxSrc,
-    openLightbox,
-    closeLightbox,
-    voting,
-    goToContestant,
-    nextContestant,
-    prevContestant,
-    castVote,
-    swipeHintVisible,
-    hideSwipeHint,
+    currentPage, goToPage,
+    mobileMenuOpen, toggleMobileMenu,
+    isModalOpen, openModal, closeModal, anyModalOpen,
+    cart, cartVisible, addToCart, changeQty, toggleCart, checkoutCart, checkoutSuccess,
+    lightboxSrc, openLightbox, closeLightbox,
+    liveStories, storiesLoading,
+    votingCategories, votingLoading, votingClient,
+    goToContestant, nextContestant, prevContestant, castVote, triggerConclude,
+    swipeHintVisible, hideSwipeHint,
   };
 
   return <SiteContext.Provider value={value}>{children}</SiteContext.Provider>;

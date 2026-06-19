@@ -4,6 +4,7 @@ import { storage } from '../lib/firebase';
 import { useAdminData } from './context/AdminDataContext';
 import { ICONS, EmptyState } from './icons';
 import type { AdminStory, StoryStatus, VotingCategory } from './types';
+import VotingTab from './context/votingTab';
 
 // ─────────────────────────────────────────────
 // Shared image-upload hook
@@ -55,7 +56,7 @@ interface ImageUploadFieldProps {
   previewHeight?: number;
 }
 
-function ImageUploadField({
+export function ImageUploadField({
   label = 'Image',
   value,
   onChange,
@@ -477,364 +478,364 @@ const STAGES: { key: VotingCategory['status']; label: string }[] = [
   { key: 'closed', label: 'Closed' },
 ];
 
-function VotingTab() {
-  const {
-    votingCategories,
-    saveCategorySchedule,
-    addContestant,
-    updateContestant,
-    deleteContestant,
-    crownWinner,
-    resetCategoryVotes,
-    resetAllVotes,
-    openConfirm,
-  } = useAdminData();
+// function VotingTab() {
+//   const {
+//     votingCategories,
+//     saveCategorySchedule,
+//     addContestant,
+//     updateContestant,
+//     deleteContestant,
+//     crownWinner,
+//     resetCategoryVotes,
+//     resetAllVotes,
+//     openConfirm,
+//   } = useAdminData();
 
-  const [schedules, setSchedules] = useState<
-    Record<number, { opens: string; closes: string; status: VotingCategory['status'] }>
-  >(() =>
-    Object.fromEntries(
-      votingCategories.map((c) => [c.id, { opens: c.opens, closes: c.closes, status: c.status }])
-    )
-  );
-  const [contModal, setContModal] = useState<{ catId: number; contId: number | null } | null>(null);
-  const [contForm, setContForm] = useState({
-    name: '',
-    tagline: '',
-    image: '',
-    reward: '',
-    votes: 0,
-  });
+//   const [schedules, setSchedules] = useState<
+//     Record<number, { opens: string; closes: string; status: VotingCategory['status'] }>
+//   >(() =>
+//     Object.fromEntries(
+//       votingCategories.map((c) => [c.id, { opens: c.opens, closes: c.closes, status: c.status }])
+//     )
+//   );
+//   const [contModal, setContModal] = useState<{ catId: number; contId: number | null } | null>(null);
+//   const [contForm, setContForm] = useState({
+//     name: '',
+//     tagline: '',
+//     image: '',
+//     reward: '',
+//     votes: 0,
+//   });
 
-  function openAddContestant(catId: number) {
-    setContModal({ catId, contId: null });
-    setContForm({ name: '', tagline: '', image: '', reward: '🏆 Magazine Feature', votes: 0 });
-  }
-  function openEditContestant(catId: number, contId: number) {
-    const cat = votingCategories.find((c) => c.id === catId)!;
-    const p = cat.contestants.find((x) => x.id === contId)!;
-    setContModal({ catId, contId });
-    setContForm({ name: p.name, tagline: p.tagline, image: p.image, reward: p.reward, votes: p.votes });
-  }
-  function saveContestant(e: React.FormEvent) {
-    e.preventDefault();
-    if (!contModal) return;
-    if (contModal.contId) updateContestant(contModal.catId, contModal.contId, contForm);
-    else addContestant(contModal.catId, contForm);
-    setContModal(null);
-  }
+//   function openAddContestant(catId: number) {
+//     setContModal({ catId, contId: null });
+//     setContForm({ name: '', tagline: '', image: '', reward: '🏆 Magazine Feature', votes: 0 });
+//   }
+//   function openEditContestant(catId: number, contId: number) {
+//     const cat = votingCategories.find((c) => c.id === catId)!;
+//     const p = cat.contestants.find((x) => x.id === contId)!;
+//     setContModal({ catId, contId });
+//     setContForm({ name: p.name, tagline: p.tagline, image: p.image, reward: p.reward, votes: p.votes });
+//   }
+//   function saveContestant(e: React.FormEvent) {
+//     e.preventDefault();
+//     if (!contModal) return;
+//     if (contModal.contId) updateContestant(contModal.catId, contModal.contId, contForm);
+//     else addContestant(contModal.catId, contForm);
+//     setContModal(null);
+//   }
 
-  return (
-    <div>
-      <div className="page-head">
-        <div>
-          <p className="section-eyebrow mb-1">Community Choice</p>
-          <h1 className="page-title">Voting Arena</h1>
-        </div>
-        <button
-          className="btn-danger-admin"
-          onClick={() =>
-            openConfirm(
-              'Reset ALL votes?',
-              'This clears vote counts across every category. This cannot be undone.',
-              resetAllVotes
-            )
-          }
-        >
-          Reset All Votes
-        </button>
-      </div>
+//   return (
+//     <div>
+//       <div className="page-head">
+//         <div>
+//           <p className="section-eyebrow mb-1">Community Choice</p>
+//           <h1 className="page-title">Voting Arena</h1>
+//         </div>
+//         <button
+//           className="btn-danger-admin"
+//           onClick={() =>
+//             openConfirm(
+//               'Reset ALL votes?',
+//               'This clears vote counts across every category. This cannot be undone.',
+//               resetAllVotes
+//             )
+//           }
+//         >
+//           Reset All Votes
+//         </button>
+//       </div>
 
-      <div className="space-y-4">
-        {votingCategories.map((c) => {
-          const sorted = [...c.contestants].sort((a, b) => b.votes - a.votes);
-          const max = sorted[0]?.votes || 1;
-          const total = c.contestants.reduce((s, x) => s + x.votes, 0);
-          const sched = schedules[c.id];
-          return (
-            <div className="panel" key={c.id}>
-              <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-                <div className="flex items-center gap-2">
-                  <span style={{ fontSize: '1.3rem' }}>{c.icon}</span>
-                  <div>
-                    <p className="font-display" style={{ fontSize: '1.05rem', fontWeight: 800 }}>
-                      {c.name}
-                    </p>
-                    <p style={{ fontSize: '.66rem', color: 'var(--warm-gray)' }}>
-                      {total.toLocaleString()} total votes · {votingCountdownText(c.closes)}
-                    </p>
-                  </div>
-                  <span
-                    className={`badge ${
-                      c.status === 'open'
-                        ? 'badge-success'
-                        : c.status === 'scheduled'
-                        ? 'badge-info'
-                        : 'badge-gray'
-                    }`}
-                  >
-                    {c.status}
-                  </span>
-                </div>
-                {sched && (
-                  <div className="flex items-end gap-2 flex-wrap">
-                    <div>
-                      <label className="field-label-admin">Opens</label>
-                      <input
-                        type="date"
-                        className="form-input-admin"
-                        style={{ fontSize: '.7rem', padding: '.4rem' }}
-                        value={sched.opens}
-                        onChange={(e) =>
-                          setSchedules({ ...schedules, [c.id]: { ...sched, opens: e.target.value } })
-                        }
-                      />
-                    </div>
-                    <div>
-                      <label className="field-label-admin">Closes</label>
-                      <input
-                        type="date"
-                        className="form-input-admin"
-                        style={{ fontSize: '.7rem', padding: '.4rem' }}
-                        value={sched.closes}
-                        onChange={(e) =>
-                          setSchedules({ ...schedules, [c.id]: { ...sched, closes: e.target.value } })
-                        }
-                      />
-                    </div>
-                    <div>
-                      <label className="field-label-admin">Status</label>
-                      <select
-                        className="form-input-admin"
-                        style={{ fontSize: '.7rem', padding: '.4rem' }}
-                        value={sched.status}
-                        onChange={(e) =>
-                          setSchedules({
-                            ...schedules,
-                            [c.id]: { ...sched, status: e.target.value as VotingCategory['status'] },
-                          })
-                        }
-                      >
-                        {STAGES.map((s) => (
-                          <option key={s.key} value={s.key}>
-                            {s.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <button
-                      className="btn-outline-admin"
-                      style={{ fontSize: '.62rem' }}
-                      onClick={() => saveCategorySchedule(c.id, sched.opens, sched.closes, sched.status)}
-                    >
-                      Save Schedule
-                    </button>
-                  </div>
-                )}
-              </div>
+//       <div className="space-y-4">
+//         {votingCategories.map((c) => {
+//           const sorted = [...c.contestants].sort((a, b) => b.votes - a.votes);
+//           const max = sorted[0]?.votes || 1;
+//           const total = c.contestants.reduce((s, x) => s + x.votes, 0);
+//           const sched = schedules[c.id];
+//           return (
+//             <div className="panel" key={c.id}>
+//               <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+//                 <div className="flex items-center gap-2">
+//                   <span style={{ fontSize: '1.3rem' }}>{c.icon}</span>
+//                   <div>
+//                     <p className="font-display" style={{ fontSize: '1.05rem', fontWeight: 800 }}>
+//                       {c.name}
+//                     </p>
+//                     <p style={{ fontSize: '.66rem', color: 'var(--warm-gray)' }}>
+//                       {total.toLocaleString()} total votes · {votingCountdownText(c.closes)}
+//                     </p>
+//                   </div>
+//                   <span
+//                     className={`badge ${
+//                       c.status === 'open'
+//                         ? 'badge-success'
+//                         : c.status === 'scheduled'
+//                         ? 'badge-info'
+//                         : 'badge-gray'
+//                     }`}
+//                   >
+//                     {c.status}
+//                   </span>
+//                 </div>
+//                 {sched && (
+//                   <div className="flex items-end gap-2 flex-wrap">
+//                     <div>
+//                       <label className="field-label-admin">Opens</label>
+//                       <input
+//                         type="date"
+//                         className="form-input-admin"
+//                         style={{ fontSize: '.7rem', padding: '.4rem' }}
+//                         value={sched.opens}
+//                         onChange={(e) =>
+//                           setSchedules({ ...schedules, [c.id]: { ...sched, opens: e.target.value } })
+//                         }
+//                       />
+//                     </div>
+//                     <div>
+//                       <label className="field-label-admin">Closes</label>
+//                       <input
+//                         type="date"
+//                         className="form-input-admin"
+//                         style={{ fontSize: '.7rem', padding: '.4rem' }}
+//                         value={sched.closes}
+//                         onChange={(e) =>
+//                           setSchedules({ ...schedules, [c.id]: { ...sched, closes: e.target.value } })
+//                         }
+//                       />
+//                     </div>
+//                     <div>
+//                       <label className="field-label-admin">Status</label>
+//                       <select
+//                         className="form-input-admin"
+//                         style={{ fontSize: '.7rem', padding: '.4rem' }}
+//                         value={sched.status}
+//                         onChange={(e) =>
+//                           setSchedules({
+//                             ...schedules,
+//                             [c.id]: { ...sched, status: e.target.value as VotingCategory['status'] },
+//                           })
+//                         }
+//                       >
+//                         {STAGES.map((s) => (
+//                           <option key={s.key} value={s.key}>
+//                             {s.label}
+//                           </option>
+//                         ))}
+//                       </select>
+//                     </div>
+//                     <button
+//                       className="btn-outline-admin"
+//                       style={{ fontSize: '.62rem' }}
+//                       onClick={() => saveCategorySchedule(c.id, sched.opens, sched.closes, sched.status)}
+//                     >
+//                       Save Schedule
+//                     </button>
+//                   </div>
+//                 )}
+//               </div>
 
-              <div className="space-y-2 mb-3">
-                {sorted.map((p, i) => (
-                  <div
-                    className="flex items-center gap-3 p-2"
-                    style={{ border: '1px solid var(--line)' }}
-                    key={p.id}
-                  >
-                    <span style={{ fontSize: '.7rem', color: 'var(--warm-gray)', width: 16 }}>#{i + 1}</span>
-                    {p.image ? (
-                      <img
-                        src={p.image}
-                        style={{
-                          width: 40,
-                          height: 40,
-                          objectFit: 'cover',
-                          flexShrink: 0,
-                          outline: p.winner ? '2px solid var(--gold)' : 'none',
-                        }}
-                      />
-                    ) : (
-                      <div
-                        style={{
-                          width: 40,
-                          height: 40,
-                          background: 'var(--off-white)',
-                          flexShrink: 0,
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                        }}
-                      >
-                        <span style={{ fontSize: '.5rem', color: 'var(--warm-gray)' }}>No img</span>
-                      </div>
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <p style={{ fontSize: '.78rem', fontWeight: 600 }} className="truncate">
-                        {p.name} {p.winner ? '👑' : ''}
-                      </p>
-                      <p
-                        className="font-script truncate"
-                        style={{ fontSize: '.72rem', fontStyle: 'italic', color: 'var(--warm-gray)' }}
-                      >
-                        {p.tagline}
-                      </p>
-                      <div style={{ background: 'var(--off-white)', height: 3, marginTop: '.3rem', maxWidth: 220 }}>
-                        <div
-                          style={{
-                            height: 3,
-                            width: `${Math.round((p.votes / max) * 100)}%`,
-                            background: 'var(--gold)',
-                          }}
-                        />
-                      </div>
-                    </div>
-                    <span className="badge badge-gray hidden sm:inline-flex">{p.reward}</span>
-                    <span
-                      className="font-display"
-                      style={{
-                        fontSize: '1.05rem',
-                        fontWeight: 800,
-                        color: 'var(--gold)',
-                        minWidth: 50,
-                        textAlign: 'right',
-                      }}
-                    >
-                      {p.votes.toLocaleString()}
-                    </span>
-                    <div className="flex gap-1">
-                      <button className="btn-icon" title="Crown as winner" onClick={() => crownWinner(c.id, p.id)}>
-                        {ICONS.crown}
-                      </button>
-                      <button
-                        className="btn-icon"
-                        title="Edit"
-                        onClick={() => openEditContestant(c.id, p.id)}
-                      >
-                        {ICONS.edit}
-                      </button>
-                      <button
-                        className="btn-icon danger"
-                        title="Remove"
-                        onClick={() =>
-                          openConfirm(
-                            'Remove contestant?',
-                            `"${p.name}" will be removed from ${c.name}.`,
-                            () => deleteContestant(c.id, p.id)
-                          )
-                        }
-                      >
-                        {ICONS.trash}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+//               <div className="space-y-2 mb-3">
+//                 {sorted.map((p, i) => (
+//                   <div
+//                     className="flex items-center gap-3 p-2"
+//                     style={{ border: '1px solid var(--line)' }}
+//                     key={p.id}
+//                   >
+//                     <span style={{ fontSize: '.7rem', color: 'var(--warm-gray)', width: 16 }}>#{i + 1}</span>
+//                     {p.image ? (
+//                       <img
+//                         src={p.image}
+//                         style={{
+//                           width: 40,
+//                           height: 40,
+//                           objectFit: 'cover',
+//                           flexShrink: 0,
+//                           outline: p.winner ? '2px solid var(--gold)' : 'none',
+//                         }}
+//                       />
+//                     ) : (
+//                       <div
+//                         style={{
+//                           width: 40,
+//                           height: 40,
+//                           background: 'var(--off-white)',
+//                           flexShrink: 0,
+//                           display: 'flex',
+//                           alignItems: 'center',
+//                           justifyContent: 'center',
+//                         }}
+//                       >
+//                         <span style={{ fontSize: '.5rem', color: 'var(--warm-gray)' }}>No img</span>
+//                       </div>
+//                     )}
+//                     <div className="flex-1 min-w-0">
+//                       <p style={{ fontSize: '.78rem', fontWeight: 600 }} className="truncate">
+//                         {p.name} {p.winner ? '👑' : ''}
+//                       </p>
+//                       <p
+//                         className="font-script truncate"
+//                         style={{ fontSize: '.72rem', fontStyle: 'italic', color: 'var(--warm-gray)' }}
+//                       >
+//                         {p.tagline}
+//                       </p>
+//                       <div style={{ background: 'var(--off-white)', height: 3, marginTop: '.3rem', maxWidth: 220 }}>
+//                         <div
+//                           style={{
+//                             height: 3,
+//                             width: `${Math.round((p.votes / max) * 100)}%`,
+//                             background: 'var(--gold)',
+//                           }}
+//                         />
+//                       </div>
+//                     </div>
+//                     <span className="badge badge-gray hidden sm:inline-flex">{p.reward}</span>
+//                     <span
+//                       className="font-display"
+//                       style={{
+//                         fontSize: '1.05rem',
+//                         fontWeight: 800,
+//                         color: 'var(--gold)',
+//                         minWidth: 50,
+//                         textAlign: 'right',
+//                       }}
+//                     >
+//                       {p.votes.toLocaleString()}
+//                     </span>
+//                     <div className="flex gap-1">
+//                       <button className="btn-icon" title="Crown as winner" onClick={() => crownWinner(c.id, p.id)}>
+//                         {ICONS.crown}
+//                       </button>
+//                       <button
+//                         className="btn-icon"
+//                         title="Edit"
+//                         onClick={() => openEditContestant(c.id, p.id)}
+//                       >
+//                         {ICONS.edit}
+//                       </button>
+//                       <button
+//                         className="btn-icon danger"
+//                         title="Remove"
+//                         onClick={() =>
+//                           openConfirm(
+//                             'Remove contestant?',
+//                             `"${p.name}" will be removed from ${c.name}.`,
+//                             () => deleteContestant(c.id, p.id)
+//                           )
+//                         }
+//                       >
+//                         {ICONS.trash}
+//                       </button>
+//                     </div>
+//                   </div>
+//                 ))}
+//               </div>
 
-              <div className="flex gap-2">
-                <button
-                  className="btn-outline-admin"
-                  style={{ fontSize: '.66rem' }}
-                  onClick={() => openAddContestant(c.id)}
-                >
-                  + Add Contestant
-                </button>
-                <button
-                  className="btn-danger-admin"
-                  style={{ fontSize: '.62rem' }}
-                  onClick={() =>
-                    openConfirm(
-                      'Reset votes?',
-                      `All vote counts in ${c.name} will be set to zero.`,
-                      () => resetCategoryVotes(c.id)
-                    )
-                  }
-                >
-                  Reset Category Votes
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+//               <div className="flex gap-2">
+//                 <button
+//                   className="btn-outline-admin"
+//                   style={{ fontSize: '.66rem' }}
+//                   onClick={() => openAddContestant(c.id)}
+//                 >
+//                   + Add Contestant
+//                 </button>
+//                 <button
+//                   className="btn-danger-admin"
+//                   style={{ fontSize: '.62rem' }}
+//                   onClick={() =>
+//                     openConfirm(
+//                       'Reset votes?',
+//                       `All vote counts in ${c.name} will be set to zero.`,
+//                       () => resetCategoryVotes(c.id)
+//                     )
+//                   }
+//                 >
+//                   Reset Category Votes
+//                 </button>
+//               </div>
+//             </div>
+//           );
+//         })}
+//       </div>
 
-      {/* Contestant Modal */}
-      <div className={`modal-admin ${contModal ? 'active' : ''}`}>
-        <div className="modal-backdrop-admin" onClick={() => setContModal(null)} />
-        <div className="modal-box-admin" style={{ maxWidth: 480 }}>
-          <button
-            className="modal-close"
-            onClick={() => setContModal(null)}
-            style={{ position: 'absolute', top: '.7rem', right: '.7rem', fontSize: '1.3rem', background: 'none', border: 'none', cursor: 'pointer', color: '#999' }}
-          >
-            &times;
-          </button>
-          <div style={{ padding: '1.2rem 1.4rem .9rem', borderBottom: '1px solid var(--line)' }}>
-            <p className="section-eyebrow mb-1">{contModal?.contId ? 'Edit Entry' : 'New Entry'}</p>
-            <h2 className="font-display" style={{ fontSize: '1.2rem', fontWeight: 800 }}>
-              {contModal?.contId ? 'Edit Contestant' : 'Add Contestant'}
-            </h2>
-          </div>
-          <form onSubmit={saveContestant} className="space-y-3" style={{ padding: '1.2rem 1.4rem' }}>
-            <div>
-              <label className="field-label-admin">Name</label>
-              <input
-                className="form-input-admin"
-                required
-                value={contForm.name}
-                onChange={(e) => setContForm({ ...contForm, name: e.target.value })}
-              />
-            </div>
-            <div>
-              <label className="field-label-admin">Tagline</label>
-              <input
-                className="form-input-admin"
-                value={contForm.tagline}
-                onChange={(e) => setContForm({ ...contForm, tagline: e.target.value })}
-              />
-            </div>
+//       {/* Contestant Modal */}
+//       <div className={`modal-admin ${contModal ? 'active' : ''}`}>
+//         <div className="modal-backdrop-admin" onClick={() => setContModal(null)} />
+//         <div className="modal-box-admin" style={{ maxWidth: 480 }}>
+//           <button
+//             className="modal-close"
+//             onClick={() => setContModal(null)}
+//             style={{ position: 'absolute', top: '.7rem', right: '.7rem', fontSize: '1.3rem', background: 'none', border: 'none', cursor: 'pointer', color: '#999' }}
+//           >
+//             &times;
+//           </button>
+//           <div style={{ padding: '1.2rem 1.4rem .9rem', borderBottom: '1px solid var(--line)' }}>
+//             <p className="section-eyebrow mb-1">{contModal?.contId ? 'Edit Entry' : 'New Entry'}</p>
+//             <h2 className="font-display" style={{ fontSize: '1.2rem', fontWeight: 800 }}>
+//               {contModal?.contId ? 'Edit Contestant' : 'Add Contestant'}
+//             </h2>
+//           </div>
+//           <form onSubmit={saveContestant} className="space-y-3" style={{ padding: '1.2rem 1.4rem' }}>
+//             <div>
+//               <label className="field-label-admin">Name</label>
+//               <input
+//                 className="form-input-admin"
+//                 required
+//                 value={contForm.name}
+//                 onChange={(e) => setContForm({ ...contForm, name: e.target.value })}
+//               />
+//             </div>
+//             <div>
+//               <label className="field-label-admin">Tagline</label>
+//               <input
+//                 className="form-input-admin"
+//                 value={contForm.tagline}
+//                 onChange={(e) => setContForm({ ...contForm, tagline: e.target.value })}
+//               />
+//             </div>
 
-            {/* ▶ STORAGE UPLOAD replaces URL input */}
-            <ImageUploadField
-              label="Contestant Photo"
-              value={contForm.image}
-              onChange={(url) => setContForm({ ...contForm, image: url })}
-              folder="contestants"
-              previewHeight={100}
-            />
+//             {/* ▶ STORAGE UPLOAD replaces URL input */}
+//             <ImageUploadField
+//               label="Contestant Photo"
+//               value={contForm.image}
+//               onChange={(url) => setContForm({ ...contForm, image: url })}
+//               folder="contestants"
+//               previewHeight={100}
+//             />
 
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="field-label-admin">Reward Badge</label>
-                <input
-                  className="form-input-admin"
-                  value={contForm.reward}
-                  onChange={(e) => setContForm({ ...contForm, reward: e.target.value })}
-                />
-              </div>
-              <div>
-                <label className="field-label-admin">Votes</label>
-                <input
-                  type="number"
-                  min={0}
-                  className="form-input-admin"
-                  value={contForm.votes}
-                  onChange={(e) => setContForm({ ...contForm, votes: Number(e.target.value) })}
-                />
-              </div>
-            </div>
-            <div className="flex gap-2 justify-end" style={{ marginTop: '.6rem' }}>
-              <button type="button" className="btn-outline-admin" onClick={() => setContModal(null)}>
-                Cancel
-              </button>
-              <button type="submit" className="btn-gold-admin">
-                Save Contestant
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-    </div>
-  );
-}
+//             <div className="grid grid-cols-2 gap-3">
+//               <div>
+//                 <label className="field-label-admin">Reward Badge</label>
+//                 <input
+//                   className="form-input-admin"
+//                   value={contForm.reward}
+//                   onChange={(e) => setContForm({ ...contForm, reward: e.target.value })}
+//                 />
+//               </div>
+//               <div>
+//                 <label className="field-label-admin">Votes</label>
+//                 <input
+//                   type="number"
+//                   min={0}
+//                   className="form-input-admin"
+//                   value={contForm.votes}
+//                   onChange={(e) => setContForm({ ...contForm, votes: Number(e.target.value) })}
+//                 />
+//               </div>
+//             </div>
+//             <div className="flex gap-2 justify-end" style={{ marginTop: '.6rem' }}>
+//               <button type="button" className="btn-outline-admin" onClick={() => setContModal(null)}>
+//                 Cancel
+//               </button>
+//               <button type="submit" className="btn-gold-admin">
+//                 Save Contestant
+//               </button>
+//             </div>
+//           </form>
+//         </div>
+//       </div>
+//     </div>
+//   );
+// }
 
 // ─────────────────────────────────────────────
 // GALLERY TAB

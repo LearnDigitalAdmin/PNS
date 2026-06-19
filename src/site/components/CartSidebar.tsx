@@ -1,7 +1,7 @@
 import { useSite } from '../context/SiteContext';
 
 export default function CartSidebar() {
-  const { cart, cartVisible, toggleCart, changeQty, checkoutCart, checkoutSuccess } = useSite();
+  const { cart, cartVisible, toggleCart, changeQty, checkoutCart, checkoutSuccess, checkoutError } = useSite();
   const total = cart.reduce((s, i) => s + i.price * i.qty, 0);
 
   return (
@@ -58,12 +58,18 @@ export default function CartSidebar() {
             <span className="font-bold text-sm">Total</span>
             <span style={{ fontWeight: 700, color: 'var(--gold)' }}>KES {total.toLocaleString()}</span>
           </div>
-          <button onClick={checkoutCart} className="btn-gold w-full">
-            Checkout (Demo)
+          {checkoutError && (
+            <p style={{ fontSize: '.7rem', color: 'var(--danger)', marginBottom: '.5rem' }}>{checkoutError}</p>
+          )}
+          <button onClick={checkoutCart} className="btn-gold w-full" disabled={cart.length === 0}>
+            Place Order
           </button>
+          <p style={{ fontSize: '.6rem', color: 'var(--warm-gray)', marginTop: '.4rem', textAlign: 'center' }}>
+            We'll contact you to arrange payment & delivery.
+          </p>
           {checkoutSuccess && (
             <div className="text-center py-3 fade-in-up">
-              <p style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, color: 'var(--gold)' }}>✦ Order placed! (Demo)</p>
+              <p style={{ fontFamily: "'Playfair Display',serif", fontWeight: 700, color: 'var(--gold)' }}>✦ Order placed! We'll be in touch.</p>
             </div>
           )}
         </div>

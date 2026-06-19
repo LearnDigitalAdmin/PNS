@@ -1,11 +1,10 @@
-import { tickerMessages } from '../data';
 import { useSite } from '../context/SiteContext';
 
 const NAV_LINKS = ['Stories', 'Voting', 'Cogvana', 'Services', 'Partners', 'Sponsored', 'Shop', 'Book'];
 
 export default function Nav() {
-  const { goToPage, toggleMobileMenu, mobileMenuOpen, openModal } = useSite();
-  const tickerItems = [...tickerMessages, ...tickerMessages];
+  const { goToPage, toggleMobileMenu, mobileMenuOpen, openModal, siteSettings } = useSite();
+  const tickerItems = [...siteSettings.tickerMessages, ...siteSettings.tickerMessages];
 
   return (
     <div id="chrome">
@@ -19,21 +18,22 @@ export default function Nav() {
         </div>
       </div>
       <nav id="nav" className="flex items-center justify-between px-5 md:px-8">
-        <a
-          href="#"
-          onClick={(e) => {
-            e.preventDefault();
-            goToPage(0);
-          }}
-          className="flex flex-col leading-none"
-        >
-          <span style={{ fontFamily: "'Playfair Display',serif", fontSize: '1.55rem', fontWeight: 900, color: '#fff', letterSpacing: '-.03em' }}>
+        
+        <a href="#" className="flex flex-col leading-none">
+          <span
+            onClick={(e) => {
+              e.preventDefault();
+              goToPage(0);
+            }}
+            style={{ fontFamily: "'Playfair Display',serif", fontSize: '1.55rem', fontWeight: 900, color: '#fff', letterSpacing: '-.03em' }}
+          >
             P&amp;S
           </span>
           <span style={{ fontSize: '.43rem', letterSpacing: '.28em', color: 'var(--gold)', textTransform: 'uppercase', fontWeight: 500 }}>
             Every Face Has A Story
           </span>
         </a>
+
         <div className="hidden lg:flex items-center gap-6">
           {NAV_LINKS.map((label, i) => (
             <span className="nav-link" key={label} onClick={() => goToPage(i + 1)}>

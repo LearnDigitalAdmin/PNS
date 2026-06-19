@@ -1,8 +1,7 @@
-import { sponsoredStoryCards } from '../data';
 import { useSite } from '../context/SiteContext';
 
 export default function SponsoredPage() {
-  const { openModal } = useSite();
+  const { openModal, sponsoredStories, sponsoredLoading } = useSite();
 
   return (
     <div className="px-5 md:px-10 py-7 max-w-7xl mx-auto">
@@ -17,21 +16,39 @@ export default function SponsoredPage() {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-7">
-        {sponsoredStoryCards.map((s) => (
-          <div className="story-card h-72 reveal" key={s.id}>
-            <img loading="lazy" decoding="async" src={s.image} className="absolute inset-0" />
-            <div className="story-card-overlay" />
-            <div className="card-content">
-              <div className="sponsored-badge mb-2">Sponsored</div>
-              <h3 style={{ fontFamily: "'Playfair Display',serif", fontSize: '.95rem', fontWeight: 800, color: '#fff', lineHeight: 1.2 }}>{s.title}</h3>
-              <button className="btn-gold mt-3" style={{ fontSize: '.56rem', padding: '.32rem .85rem' }}>
-                Read Story
-              </button>
+      {sponsoredLoading ? (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '2rem 0' }}>
+          <div style={{ width: 26, height: 26, border: '2px solid rgba(247,244,239,.2)', borderTopColor: 'var(--gold)', borderRadius: '50%', animation: 'spin .8s linear infinite' }} />
+        </div>
+      ) : sponsoredStories.length === 0 ? (
+        <p className="text-center text-xs mb-7" style={{ color: 'var(--warm-gray)' }}>
+          New sponsored stories are in production — check back soon.
+        </p>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-7">
+          {sponsoredStories.map((s) => (
+            <div className="story-card h-72 reveal" key={s.id}>
+              {s.image ? (
+                <img loading="lazy" decoding="async" src={s.image} className="absolute inset-0" />
+              ) : (
+                <div className="absolute inset-0" style={{ background: 'var(--charcoal)' }} />
+              )}
+              <div className="story-card-overlay" />
+              <div className="card-content">
+                <div className="sponsored-badge mb-2">Sponsored</div>
+                <h3 style={{ fontFamily: "'Playfair Display',serif", fontSize: '.95rem', fontWeight: 800, color: '#fff', lineHeight: 1.2 }}>
+                  {s.title || s.business}
+                </h3>
+                {s.excerpt && (
+                  <p className="text-xs mt-1" style={{ color: 'rgba(247,244,239,.7)' }}>
+                    {s.excerpt}
+                  </p>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
 
       <div className="reveal glass-dark p-7 md:p-10 text-center">
         <p className="section-eyebrow mb-2">Reach Your Audience</p>

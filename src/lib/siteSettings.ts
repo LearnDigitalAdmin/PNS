@@ -27,10 +27,15 @@ export const DEFAULT_SITE_SETTINGS: SiteSettings = {
   tickerMessages: [
     'Welcome to P&S Magazine',
     'Voting Arena Open — Cast Your Vote Now',
+    'Check Out Our Latest Articles and Features',
+    'Follow Us on Social Media for Updates',
+    'Subscribe to Our Newsletter for Exclusive Content',
+    'Advertise with Us and Reach a Wider Audience',
+    'Book Your Event with P&S Magazine Today',
   ],
-  contactEmail: 'hello@pandsmag.co.ke',
-  contactPhone: '+254 700 000 000',
-  contactLocation: 'Westlands, Nairobi, Kenya',
+  contactEmail: 'info@cogvana.co.ke',
+  contactPhone: '+254 791 286 165',
+  contactLocation: 'Nakuru, Nairobi, Kenya',
   socialLinks: [
     { label: 'Instagram', url: '#' },
     { label: 'TikTok', url: '#' },

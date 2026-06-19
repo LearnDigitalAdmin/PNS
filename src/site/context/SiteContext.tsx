@@ -20,18 +20,30 @@ import {
   recordAction,
   type ActionKey,
 } from '../../lib/fingerprint';
+import {
+  subscribeToGallery,
+  subscribeToServices,
+  subscribeToTestimonials,
+  subscribeToActivePartners,
+  subscribeToPublishedSponsoredStories,
+  subscribeToProducts,
+  createOrder,
+  type FSGalleryImage,
+  type FSServiceItem,
+  type FSTestimonial,
+  type FSPartner,
+  type FSSponsoredStory,
+  type FSProduct,
+} from '../../lib/firebaseContent';
+import { subscribeSiteSettings, type SiteSettings, DEFAULT_SITE_SETTINGS } from '../../lib/siteSettings';
 
 export const TOTAL_PAGES = 9;
 
-// ─── Voting state per category (client-side overlay) ─────────────────────────
-
 export interface VotingClientState {
-  position: number;      // which contestant is shown in the carousel
-  voted: boolean;        // voted this session (also checked via fingerprint)
-  concluding: boolean;   // true while conclusion is running
+  position: number;
+  voted: boolean;
+  concluding: boolean;
 }
-
-// ─── Context shape ────────────────────────────────────────────────────────────
 
 interface SiteContextValue {
   // page engine
@@ -54,19 +66,20 @@ interface SiteContextValue {
   addToCart: (name: string, price: number) => void;
   changeQty: (idx: number, delta: number) => void;
   toggleCart: () => void;
-  checkoutCart: () => void;
+  checkoutCart: () => Promise<void>;
   checkoutSuccess: boolean;
+  checkoutError: string | null;
 
   // lightbox
   lightboxSrc: string | null;
   openLightbox: (src: string) => void;
   closeLightbox: () => void;
 
-  // LIVE: stories from Firestore
+  // LIVE: stories
   liveStories: FSStory[];
   storiesLoading: boolean;
 
-  // LIVE: voting categories from Firestore
+  // LIVE: voting
   votingCategories: FSVotingCategory[];
   votingLoading: boolean;
   votingClient: VotingClientState[];
@@ -76,14 +89,29 @@ interface SiteContextValue {
   castVote: (catIdx: number) => Promise<void>;
   triggerConclude: (categoryId: string) => Promise<void>;
 
+  // LIVE: gallery / services / testimonials / partners / sponsored / products
+  gallery: FSGalleryImage[];
+  galleryLoading: boolean;
+  services: FSServiceItem[];
+  servicesLoading: boolean;
+  testimonials: FSTestimonial[];
+  testimonialsLoading: boolean;
+  partners: FSPartner[];
+  partnersLoading: boolean;
+  sponsoredStories: FSSponsoredStory[];
+  sponsoredLoading: boolean;
+  products: FSProduct[];
+  productsLoading: boolean;
+
+  // LIVE: site settings (ticker, contact info)
+  siteSettings: SiteSettings;
+
   // swipe hint
   swipeHintVisible: boolean;
   hideSwipeHint: () => void;
 }
 
 const SiteContext = createContext<SiteContextValue | null>(null);
-
-// ─── Provider ─────────────────────────────────────────────────────────────────
 
 export function SiteProvider({ children }: { children: React.ReactNode }) {
   // ── Page engine ──────────────────────────────────────────────────────────
@@ -128,6 +156,7 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [cartVisible, setCartVisible] = useState(false);
   const [checkoutSuccess, setCheckoutSuccess] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
   const addToCart = useCallback((name: string, price: number) => {
     setCart((prev) => {
@@ -149,11 +178,21 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
   const toggleCart = useCallback(() => {
     setCartVisible((v) => !v);
     setCheckoutSuccess(false);
+    setCheckoutError(null);
   }, []);
 
-  const checkoutCart = useCallback(() => {
-    setTimeout(() => { setCart([]); setCheckoutSuccess(true); }, 800);
-  }, []);
+  const checkoutCart = useCallback(async () => {
+    if (cart.length === 0) return;
+    setCheckoutError(null);
+    try {
+      await createOrder(cart);
+      setCart([]);
+      setCheckoutSuccess(true);
+    } catch (err) {
+      console.error('Checkout failed:', err);
+      setCheckoutError('Something went wrong placing your order. Please try again.');
+    }
+  }, [cart]);
 
   // ── Lightbox ─────────────────────────────────────────────────────────────
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -183,7 +222,6 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
       setVotingCategories(cats);
       setVotingLoading(false);
 
-      // Initialise client state for new categories
       setVotingClient((prev) => {
         const next = cats.map((cat, i) => prev[i] ?? {
           position: 0,
@@ -193,7 +231,6 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
         return next;
       });
 
-      // Auto-conclude any overdue open categories
       const now = Date.now();
       cats.forEach((cat) => {
         if (
@@ -213,7 +250,6 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
     return unsub;
   }, []);
 
-  // ── Voting client actions ─────────────────────────────────────────────────
   const goToContestant = useCallback((catIdx: number, pos: number) => {
     setVotingClient((prev) => {
       const next = [...prev];
@@ -280,6 +316,47 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // ── LIVE: gallery / services / testimonials / partners / sponsored / products ──
+  const [gallery, setGallery] = useState<FSGalleryImage[]>([]);
+  const [galleryLoading, setGalleryLoading] = useState(true);
+  useEffect(() => {
+    return subscribeToGallery((items) => { setGallery(items); setGalleryLoading(false); });
+  }, []);
+
+  const [services, setServices] = useState<FSServiceItem[]>([]);
+  const [servicesLoading, setServicesLoading] = useState(true);
+  useEffect(() => {
+    return subscribeToServices((items) => { setServices(items); setServicesLoading(false); });
+  }, []);
+
+  const [testimonials, setTestimonials] = useState<FSTestimonial[]>([]);
+  const [testimonialsLoading, setTestimonialsLoading] = useState(true);
+  useEffect(() => {
+    return subscribeToTestimonials((items) => { setTestimonials(items); setTestimonialsLoading(false); });
+  }, []);
+
+  const [partners, setPartners] = useState<FSPartner[]>([]);
+  const [partnersLoading, setPartnersLoading] = useState(true);
+  useEffect(() => {
+    return subscribeToActivePartners((items) => { setPartners(items); setPartnersLoading(false); });
+  }, []);
+
+  const [sponsoredStories, setSponsoredStories] = useState<FSSponsoredStory[]>([]);
+  const [sponsoredLoading, setSponsoredLoading] = useState(true);
+  useEffect(() => {
+    return subscribeToPublishedSponsoredStories((items) => { setSponsoredStories(items); setSponsoredLoading(false); });
+  }, []);
+
+  const [products, setProducts] = useState<FSProduct[]>([]);
+  const [productsLoading, setProductsLoading] = useState(true);
+  useEffect(() => {
+    return subscribeToProducts((items) => { setProducts(items); setProductsLoading(false); });
+  }, []);
+
+  // ── LIVE: site settings ─────────────────────────────────────────────────
+  const [siteSettings, setSiteSettings] = useState<SiteSettings>(DEFAULT_SITE_SETTINGS);
+  useEffect(() => subscribeSiteSettings(setSiteSettings), []);
+
   // ── Swipe hint ───────────────────────────────────────────────────────────
   const [swipeHintVisible, setSwipeHintVisible] = useState(true);
   const hideSwipeHint = useCallback(() => setSwipeHintVisible(false), []);
@@ -296,11 +373,18 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
     currentPage, goToPage,
     mobileMenuOpen, toggleMobileMenu,
     isModalOpen, openModal, closeModal, anyModalOpen,
-    cart, cartVisible, addToCart, changeQty, toggleCart, checkoutCart, checkoutSuccess,
+    cart, cartVisible, addToCart, changeQty, toggleCart, checkoutCart, checkoutSuccess, checkoutError,
     lightboxSrc, openLightbox, closeLightbox,
     liveStories, storiesLoading,
     votingCategories, votingLoading, votingClient,
     goToContestant, nextContestant, prevContestant, castVote, triggerConclude,
+    gallery, galleryLoading,
+    services, servicesLoading,
+    testimonials, testimonialsLoading,
+    partners, partnersLoading,
+    sponsoredStories, sponsoredLoading,
+    products, productsLoading,
+    siteSettings,
     swipeHintVisible, hideSwipeHint,
   };
 

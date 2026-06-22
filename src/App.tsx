@@ -5,6 +5,6 @@ import { useSmartImageFit } from './lib/useSmartImageFit';
 
 export default function App() {
   useImageFallback();
-  useSmartImageFit();
+  // useSmartImageFit();
   return <RouterProvider router={router} />;
 }

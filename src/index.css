@@ -1419,8 +1419,19 @@ label.field-label-admin {
     transform: translateX(0);
   }
 }
+img {
+  object-position: top;
+}
+
+.masonry-item img {
+  object-position: center;
+}
+
+/* Smart-fit hook output: portrait images forced into wide boxes get
+   letterboxed instead of cropped, with a blurred backdrop fill. */
 img[data-fit='contain'] {
   object-fit: contain !important;
+  object-position: center !important;
   background: var(--black, #0a0a0a);
 }
 

@@ -1545,7 +1545,13 @@ img[data-fit='contain'] {
 }
 
 /* ============ SITE: STORY MODAL ============ */
-.story-modal-box { max-width: 720px; padding: 0 !important; overflow: hidden; }
+.story-modal-box {
+  max-width: 720px;
+  padding: 0 !important;
+  overflow-x: hidden;   /* was: overflow: hidden */
+  overflow-y: auto;
+}
+
 .story-modal-close {
   position: absolute; top: 0.8rem; right: 0.8rem; z-index: 2;
   font-size: 1.5rem; background: rgba(10, 10, 10, 0.5); color: #fff;

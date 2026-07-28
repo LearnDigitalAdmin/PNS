@@ -7,6 +7,7 @@ export interface AdminStory {
   excerpt: string;
   body: string;
   image: string;
+  images?: string[];
   status: StoryStatus;
   author: string;
   date: string;
@@ -75,6 +76,7 @@ export type RequestType = keyof RequestsState;
 
 export type DealStage = 'inquiry' | 'production' | 'live' | 'completed';
 
+
 export interface SponsoredDeal {
   id: number;
   business: string;
@@ -82,12 +84,18 @@ export interface SponsoredDeal {
   budget: string;
   contact: string;
   stage: DealStage;
-  // Public-facing fields for the Sponsored Stories page (optional — filled
-  // in once a deal reaches the 'live' stage and is ready to publish).
   title?: string;
   excerpt?: string;
+  body?: string;
   image?: string;
+  images?: string[];
   published?: boolean;
+  // Contact / CTA fields
+  contactPhone?: string;
+  contactEmail?: string;
+  contactWhatsApp?: string;
+  ctaLabel?: string;
+  ctaUrl?: string;
 }
 
 export type PartnerStatus = 'active' | 'pending' | 'suspended';

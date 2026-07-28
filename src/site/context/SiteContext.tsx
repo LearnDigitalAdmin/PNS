@@ -46,12 +46,9 @@ export interface VotingClientState {
   concluding: boolean;
 }
 
-/** Result of parsing a `?vote=catKey:contestantId` shared link. */
 export interface SharedVoteTarget {
   catIdx: number;
   pos: number;
-  /** Increments each time a new shared link is consumed, so consumers
-   *  (VotingPage) can react even if catIdx/pos repeat. */
   nonce: number;
 }
 
@@ -61,9 +58,19 @@ export interface StoryModalData {
   excerpt?: string;
   body?: string;
   image: string;
+  images?: string[];
   author?: string;
   date?: string;
   instagram?: string;
+  // Sponsored-specific
+  isSponsored?: boolean;
+  contactPhone?: string;
+  contactEmail?: string;
+  contactWhatsApp?: string;
+  ctaLabel?: string;
+  ctaUrl?: string;
+  // Share ID (Firestore story doc id, if applicable)
+  storyId?: string;
 }
 
 interface SiteContextValue {
@@ -115,6 +122,12 @@ interface SiteContextValue {
   consumeSharedVoteTarget: () => void;
   buildShareUrl: (catKey: string, contestantId: string) => string;
 
+  // shareable story links
+  buildStoryShareUrl: (storyId: string) => string;
+  sharedLinkLoading: boolean;
+  sharedLinkError: string | null;
+  clearSharedLinkError: () => void;
+
   // LIVE: gallery / services / testimonials / partners / sponsored / products
   gallery: FSGalleryImage[];
   galleryLoading: boolean;
@@ -129,14 +142,14 @@ interface SiteContextValue {
   products: FSProduct[];
   productsLoading: boolean;
 
-  // LIVE: site settings (ticker, contact info)
+  // LIVE: site settings
   siteSettings: SiteSettings;
 
   // swipe hint
   swipeHintVisible: boolean;
   hideSwipeHint: () => void;
 
-  // story modal ("Read Story")
+  // story modal
   storyModalData: StoryModalData | null;
   openStoryModal: (story: StoryModalData) => void;
   closeStoryModal: () => void;
@@ -171,12 +184,10 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
   const isModalOpen = useCallback((id: string) => !!modals[id], [modals]);
   const openModal = useCallback((id: string) => setModals((m) => ({ ...m, [id]: true })), []);
   const closeModal = useCallback((id: string) => setModals((m) => ({ ...m, [id]: false })), []);
-  // const anyModalOpen = Object.values(modals).some(Boolean);
 
   const [storyModalData, setStoryModalData] = useState<StoryModalData | null>(null);
   const openStoryModal = useCallback((story: StoryModalData) => setStoryModalData(story), []);
   const closeStoryModal = useCallback(() => setStoryModalData(null), []);
-
 
   const anyModalOpen = Object.values(modals).some(Boolean) || !!storyModalData;
 
@@ -187,16 +198,6 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
         setStoryModalData(null);
       }
     };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, []);
-
-  useEffect(() => {
-    document.body.style.overflow = anyModalOpen ? 'hidden' : '';
-  }, [anyModalOpen]);
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setModals({}); };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
   }, []);
@@ -370,80 +371,60 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // ── Shareable voting links ──────────────────────────────────────────────
-  // URL shape: https://yourdomain/?vote=<categoryKey>:<contestantId>
-  // Parsed once voting categories have loaded, since we need contestant
-  // lists to resolve the position. Safe to ignore if malformed/missing —
-  // falls through to normal app behavior with no errors.
   const [sharedVoteTarget, setSharedVoteTarget] = useState<SharedVoteTarget | null>(null);
   const sharedLinkConsumedRef = useRef(false);
 
+  // ── Shared link loading / error state (covers both vote and story links) ─
+  const [sharedLinkLoading, setSharedLinkLoading] = useState(false);
+  const [sharedLinkError, setSharedLinkError] = useState<string | null>(null);
+  const clearSharedLinkError = useCallback(() => setSharedLinkError(null), []);
+
+  // Parse ?vote= link
   useEffect(() => {
     if (sharedLinkConsumedRef.current) return;
     if (votingLoading || votingCategories.length === 0) return;
 
     let params: URLSearchParams;
-    try {
-      params = new URLSearchParams(window.location.search);
-    } catch {
-      return;
-    }
+    try { params = new URLSearchParams(window.location.search); } catch { return; }
 
     const voteParam = params.get('vote');
-    if (!voteParam) {
-      sharedLinkConsumedRef.current = true;
-      return;
-    }
+    if (!voteParam) return;
 
     const sepIdx = voteParam.indexOf(':');
-    if (sepIdx === -1) {
-      sharedLinkConsumedRef.current = true;
-      return;
-    }
+    if (sepIdx === -1) { sharedLinkConsumedRef.current = true; return; }
 
     const catKey = voteParam.slice(0, sepIdx);
     const contestantId = voteParam.slice(sepIdx + 1);
-
     const catIdx = votingCategories.findIndex((c) => c.key === catKey);
-    if (catIdx === -1) {
-      sharedLinkConsumedRef.current = true;
-      return;
-    }
+    if (catIdx === -1) { sharedLinkConsumedRef.current = true; return; }
 
     const pos = votingCategories[catIdx].contestants.findIndex((c) => c.id === contestantId);
-    if (pos === -1) {
-      // Category resolved but contestant not found yet (contestants may
-      // still be hydrating asynchronously) — don't mark consumed, retry
-      // on next categories update.
-      return;
-    }
+    if (pos === -1) return; // contestants still hydrating — retry next tick
 
     sharedLinkConsumedRef.current = true;
-
     goToPage(VOTING_PAGE_INDEX);
     goToContestant(catIdx, pos);
-    setSharedVoteTarget((prev) => ({
-      catIdx,
-      pos,
-      nonce: (prev?.nonce ?? 0) + 1,
-    }));
+    setSharedVoteTarget((prev) => ({ catIdx, pos, nonce: (prev?.nonce ?? 0) + 1 }));
 
-    // Clean the URL so refreshes/re-shares of the resulting link don't
-    // re-trigger navigation unexpectedly, while leaving history intact.
-    try {
-      window.history.replaceState({}, '', window.location.pathname);
-    } catch {
-      // ignore — non-fatal if history API is unavailable
-    }
+    try { window.history.replaceState({}, '', window.location.pathname); } catch { }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [votingLoading, votingCategories, goToPage, goToContestant]);
 
-  const consumeSharedVoteTarget = useCallback(() => {
-    setSharedVoteTarget(null);
-  }, []);
+  const consumeSharedVoteTarget = useCallback(() => setSharedVoteTarget(null), []);
 
   const buildShareUrl = useCallback((catKey: string, contestantId: string) => {
     const base = `${window.location.origin}${window.location.pathname}`;
     return `${base}?vote=${encodeURIComponent(catKey)}:${encodeURIComponent(contestantId)}`;
+  }, []);
+
+  // ── Shareable story links (?story=<id>) ─────────────────────────────────
+  const storyLinkConsumedRef = useRef(false);
+  // We need access to sponsoredStories below — hoist the state declarations
+  // before this effect runs, so we reference the correct refs.
+
+  const buildStoryShareUrl = useCallback((storyId: string) => {
+    const base = `${window.location.origin}${window.location.pathname}`;
+    return `${base}?story=${encodeURIComponent(storyId)}`;
   }, []);
 
   // ── LIVE: gallery / services / testimonials / partners / sponsored / products ──
@@ -483,6 +464,76 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
     return subscribeToProducts((items) => { setProducts(items); setProductsLoading(false); });
   }, []);
 
+  // ── Parse ?story= link (runs once live data is ready) ──────────────────
+  useEffect(() => {
+    if (storyLinkConsumedRef.current) return;
+    // Wait until at least one of the two story collections has loaded
+    if (storiesLoading && sponsoredLoading) return;
+
+    let params: URLSearchParams;
+    try { params = new URLSearchParams(window.location.search); } catch { return; }
+
+    const storyId = params.get('story');
+    if (!storyId) { storyLinkConsumedRef.current = true; return; }
+
+    // Show loading indicator while data may still be arriving
+    setSharedLinkLoading(true);
+
+    // Try featured stories first
+    const featured = liveStories.find((s) => s.id === storyId);
+    if (featured) {
+      storyLinkConsumedRef.current = true;
+      setSharedLinkLoading(false);
+      openStoryModal({
+        storyId: featured.id,
+        title: featured.title,
+        category: featured.category,
+        excerpt: featured.excerpt,
+        body: featured.body,
+        image: featured.image,
+        images: featured.images,
+        author: featured.author,
+        date: featured.date,
+        instagram: featured.instagram,
+      });
+      try { window.history.replaceState({}, '', window.location.pathname); } catch { }
+      return;
+    }
+
+    // Try sponsored stories
+    const sponsored = sponsoredStories.find((s) => s.id === storyId);
+    if (sponsored) {
+      storyLinkConsumedRef.current = true;
+      setSharedLinkLoading(false);
+      openStoryModal({
+        storyId: sponsored.id,
+        title: sponsored.title || sponsored.business,
+        category: 'Sponsored Story',
+        excerpt: sponsored.excerpt,
+        body: sponsored.body,
+        image: sponsored.image || '',
+        images: sponsored.images,
+        isSponsored: true,
+        contactPhone: sponsored.contactPhone,
+        contactEmail: sponsored.contactEmail,
+        contactWhatsApp: sponsored.contactWhatsApp,
+        ctaLabel: sponsored.ctaLabel,
+        ctaUrl: sponsored.ctaUrl,
+      });
+      try { window.history.replaceState({}, '', window.location.pathname); } catch { }
+      return;
+    }
+
+    // If both collections are done loading and we still didn't find it — show error
+    if (!storiesLoading && !sponsoredLoading) {
+      storyLinkConsumedRef.current = true;
+      setSharedLinkLoading(false);
+      setSharedLinkError('This story could not be found. It may have been removed or the link is invalid.');
+      try { window.history.replaceState({}, '', window.location.pathname); } catch { }
+    }
+    // Otherwise keep waiting (effect will re-run as collections update)
+  }, [storiesLoading, sponsoredLoading, liveStories, sponsoredStories, openStoryModal]);
+
   // ── LIVE: site settings ─────────────────────────────────────────────────
   const [siteSettings, setSiteSettings] = useState<SiteSettings>(DEFAULT_SITE_SETTINGS);
   useEffect(() => subscribeSiteSettings(setSiteSettings), []);
@@ -509,6 +560,10 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
     votingCategories, votingLoading, votingClient,
     goToContestant, nextContestant, prevContestant, castVote, triggerConclude,
     sharedVoteTarget, consumeSharedVoteTarget, buildShareUrl,
+    buildStoryShareUrl,
+    sharedLinkLoading,
+    sharedLinkError,
+    clearSharedLinkError,
     gallery, galleryLoading,
     services, servicesLoading,
     testimonials, testimonialsLoading,

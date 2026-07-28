@@ -17,6 +17,7 @@ function storyToSlide(s: FSStory) {
     subtitle: s.excerpt ?? '',
     excerpt: s.body ? s.body.slice(0, 160) : '',
     body: s.body,
+    images: s.images,
     author: s.author,
     date: s.date,
     ctas: [
@@ -66,14 +67,16 @@ export default function HeroPage() {
     if (action.type === 'goToPage') goToPage(action.page);
     if (action.type === 'openModal') openModal(action.modal);
     if (action.type === 'openStory') {
+      const typed = s as ReturnType<typeof storyToSlide>;
       openStoryModal({
         title: s.titleLine1 + (s.titleLine2 ? ' ' + s.titleLine2 : ''),
         category: s.badge,
         excerpt: s.subtitle,
-        body: (s as ReturnType<typeof storyToSlide>).body,
+        body: typed.body,
         image: s.image,
-        author: (s as ReturnType<typeof storyToSlide>).author,
-        date: (s as ReturnType<typeof storyToSlide>).date,
+        images: typed.images,
+        author: typed.author,
+        date: typed.date,
       });
     }
   }

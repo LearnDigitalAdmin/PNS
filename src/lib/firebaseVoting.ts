@@ -265,6 +265,7 @@ export interface FSStory {
   excerpt: string;
   body: string;
   image: string;
+  images?: string[];
   status: 'draft' | 'scheduled' | 'live';
   author: string;
   date: string;

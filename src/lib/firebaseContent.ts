@@ -95,9 +95,16 @@ export interface FSSponsoredStory {
   business: string;
   title?: string;
   excerpt?: string;
+  body?: string;
   image?: string;
+  images?: string[];
   stage: 'inquiry' | 'production' | 'live' | 'completed';
   published?: boolean;
+  contactPhone?: string;
+  contactEmail?: string;
+  contactWhatsApp?: string;
+  ctaLabel?: string;
+  ctaUrl?: string;
 }
 
 export function subscribeToPublishedSponsoredStories(

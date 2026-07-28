@@ -17,6 +17,7 @@ import { REQUEST_TYPE_LABELS } from './data';
 import { openWhatsApp, cleanPhoneForWhatsApp } from '../lib/fingerprint';
 import type { RequestType, RequestStatus, DealStage, Partner, PartnerStatus, SponsoredDeal } from './types';
 import { ImageUploadField } from './ContentSection';
+import { MarkdownEditor } from './MarkdownEditor';
 
 // ─── Types for Firestore documents ────────────────────────────────────────────
 
@@ -562,6 +563,17 @@ function RequestsTab() {
 
 // ─── SponsoredTab (Firestore-backed pipeline) ─────────────────────────────────
 
+// ─── DROP-IN REPLACEMENT: SponsoredTab ───────────────────────────────────────
+// Replace the entire SponsoredTab function (and its STAGES/STAGE_ORDER consts
+// if they are only used inside it) in src/admin/BusinessSection.tsx.
+// The ImageUploadField import already exists in that file from ContentSection.
+
+// ── Additional import needed at the top of BusinessSection.tsx ──
+// (add this with the other imports if not already present)
+// import { MarkdownEditor } from './MarkdownEditor';
+
+// ─── Paste this entire block in place of the existing SponsoredTab ────────────
+
 const STAGES: { key: DealStage; label: string }[] = [
   { key: 'inquiry', label: 'Inquiry' },
   { key: 'production', label: 'In Production' },
@@ -574,7 +586,31 @@ function SponsoredTab() {
   const { openConfirm, showToast, logActivity } = useAdminData();
   const [deals, setDeals] = useState<FirestoreRequest[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
-  const [form, setForm] = useState({ business: '', contact: '', industry: '', budget: '', stage: 'inquiry' as DealStage });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'pipeline' | 'info'>('pipeline');
+
+  const emptyForm = () => ({
+    business: '',
+    contact: '',
+    industry: '',
+    budget: '',
+    stage: 'inquiry' as DealStage,
+    // Story fields
+    title: '',
+    excerpt: '',
+    body: '',
+    image: '',
+    images: [] as string[],
+    published: false,
+    // CTA fields
+    contactPhone: '',
+    contactEmail: '',
+    contactWhatsApp: '',
+    ctaLabel: '',
+    ctaUrl: '',
+  });
+
+  const [form, setForm] = useState(emptyForm());
 
   useEffect(() => {
     const q = query(collection(db, 'sponsoredDeals'), orderBy('createdAt', 'desc'));
@@ -583,17 +619,67 @@ function SponsoredTab() {
     });
   }, []);
 
-  async function addDeal(e: React.FormEvent) {
+  function openAdd() {
+    setEditingId(null);
+    setForm(emptyForm());
+    setActiveTab('pipeline');
+    setModalOpen(true);
+  }
+
+  function openEdit(deal: FirestoreRequest) {
+    setEditingId(deal.id);
+    setForm({
+      business: deal.business ?? '',
+      contact: deal.contact ?? '',
+      industry: deal.industry ?? '',
+      budget: deal.budget ?? '',
+      stage: deal.stage ?? 'inquiry',
+      title: deal.title ?? '',
+      excerpt: deal.excerpt ?? '',
+      body: deal.body ?? '',
+      image: deal.image ?? '',
+      images: deal.images ?? [],
+      published: deal.published ?? false,
+      contactPhone: deal.contactPhone ?? '',
+      contactEmail: deal.contactEmail ?? '',
+      contactWhatsApp: deal.contactWhatsApp ?? '',
+      ctaLabel: deal.ctaLabel ?? '',
+      ctaUrl: deal.ctaUrl ?? '',
+    });
+    setActiveTab('pipeline');
+    setModalOpen(true);
+  }
+
+  async function save(e: React.FormEvent) {
     e.preventDefault();
-    await addDoc(collection(db, 'sponsoredDeals'), {
-      ...form,
+    const payload = {
+      business: form.business,
+      contact: form.contact,
       industry: form.industry || 'General',
       budget: form.budget || '—',
-      createdAt: serverTimestamp(),
-    });
-    logActivity(`Added sponsored deal: ${form.business}`);
-    showToast('Deal added', 'success');
-    setForm({ business: '', contact: '', industry: '', budget: '', stage: 'inquiry' });
+      stage: form.stage,
+      title: form.title,
+      excerpt: form.excerpt,
+      body: form.body,
+      image: form.image,
+      images: form.images,
+      published: form.published,
+      contactPhone: form.contactPhone,
+      contactEmail: form.contactEmail,
+      contactWhatsApp: form.contactWhatsApp,
+      ctaLabel: form.ctaLabel,
+      ctaUrl: form.ctaUrl,
+    };
+
+    if (editingId) {
+      await updateDoc(doc(db, 'sponsoredDeals', editingId), payload);
+      logActivity(`Updated sponsored deal: ${form.business}`);
+      showToast('Deal updated', 'success');
+    } else {
+      await addDoc(collection(db, 'sponsoredDeals'), { ...payload, createdAt: serverTimestamp() });
+      logActivity(`Added sponsored deal: ${form.business}`);
+      showToast('Deal added', 'success');
+    }
     setModalOpen(false);
   }
 
@@ -612,6 +698,30 @@ function SponsoredTab() {
     logActivity(`Removed deal: ${deal.business}`);
   }
 
+  async function togglePublish(deal: FirestoreRequest) {
+    const next = !deal.published;
+    await updateDoc(doc(db, 'sponsoredDeals', deal.id), { published: next });
+    showToast(next ? 'Story published to site' : 'Story unpublished', next ? 'success' : 'danger');
+    logActivity(`${next ? 'Published' : 'Unpublished'} sponsored story: ${deal.business}`);
+  }
+
+  // Multi-image helpers
+  function addImage(url: string) {
+    setForm((f) => ({ ...f, images: [...f.images, url] }));
+  }
+  function removeImage(idx: number) {
+    setForm((f) => ({ ...f, images: f.images.filter((_, i) => i !== idx) }));
+  }
+  function moveImage(idx: number, dir: -1 | 1) {
+    setForm((f) => {
+      const arr = [...f.images];
+      const target = idx + dir;
+      if (target < 0 || target >= arr.length) return f;
+      [arr[idx], arr[target]] = [arr[target], arr[idx]];
+      return { ...f, images: arr };
+    });
+  }
+
   return (
     <div>
       <div className="page-head">
@@ -619,7 +729,7 @@ function SponsoredTab() {
           <p className="section-eyebrow mb-1">Brand Partnerships</p>
           <h1 className="page-title">Sponsored Stories Pipeline</h1>
         </div>
-        <button className="btn-gold-admin" onClick={() => setModalOpen(true)}>+ New Deal</button>
+        <button className="btn-gold-admin" onClick={openAdd}>+ New Deal</button>
       </div>
 
       <div className="flex gap-3 overflow-x-auto pb-2">
@@ -638,28 +748,57 @@ function SponsoredTab() {
               )}
               {cards.map((d) => (
                 <div className="kanban-card" key={d.id}>
+                  {/* Cover thumbnail if story has image */}
+                  {d.image && (
+                    <img
+                      src={d.image}
+                      alt={d.business}
+                      style={{ width: '100%', height: 72, objectFit: 'cover', marginBottom: '.5rem', display: 'block' }}
+                    />
+                  )}
                   <p style={{ fontWeight: 700 }}>{d.business}</p>
                   <p style={{ color: 'var(--warm-gray)', fontSize: '.68rem', marginTop: '.15rem' }}>
                     {d.industry} · {d.budget}
                   </p>
                   <p style={{ color: 'var(--warm-gray)', fontSize: '.68rem' }}>Contact: {d.contact}</p>
-                  {d.phone && (
-                    <p style={{ color: 'var(--warm-gray)', fontSize: '.68rem' }}>📱 {d.phone}</p>
-                  )}
-                  <div className="flex justify-between items-center mt-2">
-                    <button
-                      className="btn-icon danger"
-                      title="Remove"
-                      onClick={() =>
-                        openConfirm(
-                          'Remove this deal?',
-                          `"${d.business}" will be removed.`,
-                          () => deleteDeal(d)
-                        )
-                      }
-                    >
-                      {ICONS.trash}
-                    </button>
+                  {d.phone && <p style={{ color: 'var(--warm-gray)', fontSize: '.68rem' }}>📱 {d.phone}</p>}
+
+                  {/* Published badge */}
+                  <div className="flex items-center gap-1 mt-1.5 flex-wrap">
+                    <span className={`badge ${d.published ? 'badge-success' : 'badge-gray'}`}>
+                      {d.published ? 'Published' : 'Draft'}
+                    </span>
+                    {d.images?.length > 0 && (
+                      <span className="badge badge-info">{d.images.length} img</span>
+                    )}
+                  </div>
+
+                  <div className="flex justify-between items-center mt-2 flex-wrap gap-1">
+                    <div className="flex gap-1">
+                      {/* Edit */}
+                      <button className="btn-icon" title="Edit story" onClick={() => openEdit(d)}>
+                        {ICONS.edit}
+                      </button>
+                      {/* Publish / unpublish */}
+                      <button
+                        className={`btn-icon ${d.published ? '' : ''}`}
+                        title={d.published ? 'Unpublish' : 'Publish to site'}
+                        onClick={() => togglePublish(d)}
+                        style={{ color: d.published ? 'var(--danger)' : 'var(--success)' }}
+                      >
+                        {d.published ? ICONS.x : ICONS.check}
+                      </button>
+                      {/* Delete */}
+                      <button
+                        className="btn-icon danger"
+                        title="Remove"
+                        onClick={() =>
+                          openConfirm('Remove this deal?', `"${d.business}" will be removed.`, () => deleteDeal(d))
+                        }
+                      >
+                        {ICONS.trash}
+                      </button>
+                    </div>
                     {si < STAGES.length - 1 && (
                       <button
                         className="btn-outline-admin"
@@ -677,10 +816,10 @@ function SponsoredTab() {
         })}
       </div>
 
-      {/* New Deal Modal */}
+      {/* Add / Edit Modal */}
       <div className={`modal-admin ${modalOpen ? 'active' : ''}`}>
         <div className="modal-backdrop-admin" onClick={() => setModalOpen(false)} />
-        <div className="modal-box-admin" style={{ maxWidth: 460 }}>
+        <div className="modal-box-admin" style={{ maxWidth: 620 }}>
           <button
             onClick={() => setModalOpen(false)}
             style={{ position: 'absolute', top: '.7rem', right: '.7rem', fontSize: '1.3rem', background: 'none', border: 'none', cursor: 'pointer', color: '#999' }}
@@ -688,39 +827,198 @@ function SponsoredTab() {
             &times;
           </button>
           <div style={{ padding: '1.2rem 1.4rem .9rem', borderBottom: '1px solid var(--line)' }}>
-            <h2 className="font-display" style={{ fontSize: '1.2rem', fontWeight: 800 }}>New Sponsored Deal</h2>
+            <h2 className="font-display" style={{ fontSize: '1.2rem', fontWeight: 800 }}>
+              {editingId ? 'Edit Sponsored Deal' : 'New Sponsored Deal'}
+            </h2>
           </div>
-          <form onSubmit={addDeal} className="space-y-3" style={{ padding: '1.2rem 1.4rem' }}>
-            <div>
-              <label className="field-label-admin">Business / Story Name</label>
-              <input className="form-input-admin" required value={form.business} onChange={(e) => setForm({ ...form, business: e.target.value })} />
-            </div>
-            <div>
-              <label className="field-label-admin">Contact Person</label>
-              <input className="form-input-admin" value={form.contact} onChange={(e) => setForm({ ...form, contact: e.target.value })} />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="field-label-admin">Industry</label>
-                <input className="form-input-admin" placeholder="Beauty & Wellness" value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value })} />
+
+          {/* Internal tab nav */}
+          <div className="flex gap-1" style={{ padding: '0 1.4rem', borderBottom: '1px solid var(--line)' }}>
+            {(['pipeline', 'info'] as const).map((t) => (
+              <button
+                key={t}
+                className={`tab-btn ${activeTab === t ? 'active' : ''}`}
+                onClick={() => setActiveTab(t)}
+              >
+                {t === 'pipeline' ? 'Deal Info' : 'Story & CTAs'}
+              </button>
+            ))}
+          </div>
+
+          <form onSubmit={save} style={{ padding: '1.2rem 1.4rem' }}>
+            {activeTab === 'pipeline' && (
+              <div className="space-y-3">
+                <div>
+                  <label className="field-label-admin">Business / Story Name *</label>
+                  <input className="form-input-admin" required value={form.business} onChange={(e) => setForm({ ...form, business: e.target.value })} />
+                </div>
+                <div>
+                  <label className="field-label-admin">Contact Person</label>
+                  <input className="form-input-admin" value={form.contact} onChange={(e) => setForm({ ...form, contact: e.target.value })} />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="field-label-admin">Industry</label>
+                    <input className="form-input-admin" placeholder="Beauty & Wellness" value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="field-label-admin">Budget</label>
+                    <input className="form-input-admin" placeholder="KES 30K–60K" value={form.budget} onChange={(e) => setForm({ ...form, budget: e.target.value })} />
+                  </div>
+                </div>
+                <div>
+                  <label className="field-label-admin">Pipeline Stage</label>
+                  <select className="form-input-admin" value={form.stage} onChange={(e) => setForm({ ...form, stage: e.target.value as DealStage })}>
+                    <option value="inquiry">Inquiry</option>
+                    <option value="production">In Production</option>
+                    <option value="live">Live</option>
+                    <option value="completed">Completed</option>
+                  </select>
+                </div>
+                <label className="flex items-center gap-2 mt-1" style={{ cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={form.published}
+                    onChange={(e) => setForm({ ...form, published: e.target.checked })}
+                    style={{ accentColor: 'var(--gold)', width: 14, height: 14 }}
+                  />
+                  <span style={{ fontSize: '.74rem', fontWeight: 600 }}>
+                    Published — visible on the Sponsored Stories page
+                  </span>
+                </label>
+                {form.published && !form.body && (
+                  <div style={{ background: 'var(--warn-bg)', border: '1px solid rgba(185,133,46,.3)', padding: '.5rem .7rem', fontSize: '.7rem', color: 'var(--warn)' }}>
+                    ⚠ Story body is empty — switch to "Story & CTAs" to add content before publishing.
+                  </div>
+                )}
               </div>
-              <div>
-                <label className="field-label-admin">Budget</label>
-                <input className="form-input-admin" placeholder="KES 30K–60K" value={form.budget} onChange={(e) => setForm({ ...form, budget: e.target.value })} />
+            )}
+
+            {activeTab === 'info' && (
+              <div className="space-y-3">
+                {/* Story title */}
+                <div>
+                  <label className="field-label-admin">Story Headline</label>
+                  <input
+                    className="form-input-admin"
+                    placeholder="How Luxe Salon Became Nairobi's Beauty Destination"
+                    value={form.title}
+                    onChange={(e) => setForm({ ...form, title: e.target.value })}
+                  />
+                </div>
+
+                {/* Excerpt */}
+                <div>
+                  <label className="field-label-admin">Excerpt / Tagline</label>
+                  <textarea
+                    className="form-input-admin"
+                    rows={2}
+                    placeholder="A short description shown on story cards…"
+                    value={form.excerpt}
+                    onChange={(e) => setForm({ ...form, excerpt: e.target.value })}
+                  />
+                </div>
+
+                {/* Cover image */}
+                <ImageUploadField
+                  label="Cover Image (shown on card + top of story)"
+                  value={form.image}
+                  onChange={(url) => setForm({ ...form, image: url })}
+                  folder="sponsored"
+                  previewHeight={130}
+                />
+
+                {/* Additional images */}
+                <div>
+                  <label className="field-label-admin">Additional Story Images</label>
+                  <p style={{ fontSize: '.62rem', color: 'var(--warm-gray)', marginBottom: '.4rem' }}>
+                    These appear in the gallery carousel inside the story modal.
+                  </p>
+                  {form.images.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      {form.images.map((img, idx) => (
+                        <div key={idx} style={{ position: 'relative', width: 70, flexShrink: 0 }}>
+                          <img src={img} style={{ width: 70, height: 50, objectFit: 'cover', border: '1px solid var(--line)', display: 'block' }} />
+                          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 2 }}>
+                            <button
+                              type="button"
+                              onClick={() => moveImage(idx, -1)}
+                              disabled={idx === 0}
+                              style={{ fontSize: '.55rem', background: 'var(--off-white)', border: '1px solid var(--line)', cursor: 'pointer', padding: '1px 4px' }}
+                            >←</button>
+                            <button
+                              type="button"
+                              onClick={() => removeImage(idx)}
+                              style={{ fontSize: '.55rem', background: 'var(--danger-bg)', border: '1px solid rgba(168,69,62,.3)', color: 'var(--danger)', cursor: 'pointer', padding: '1px 4px' }}
+                            >✕</button>
+                            <button
+                              type="button"
+                              onClick={() => moveImage(idx, 1)}
+                              disabled={idx === form.images.length - 1}
+                              style={{ fontSize: '.55rem', background: 'var(--off-white)', border: '1px solid var(--line)', cursor: 'pointer', padding: '1px 4px' }}
+                            >→</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <ImageUploadField
+                    label=""
+                    value=""
+                    onChange={(url) => { if (url) addImage(url); }}
+                    folder="sponsored"
+                    previewHeight={0}
+                  />
+                </div>
+
+                {/* Story body */}
+                <div>
+                  <label className="field-label-admin">Story Body</label>
+                  <MarkdownEditor
+                    value={form.body}
+                    onChange={(body) => setForm({ ...form, body })}
+                    rows={7}
+                    placeholder="Write the full sponsored story…"
+                  />
+                </div>
+
+                {/* CTA / Contact fields */}
+                <div style={{ borderTop: '1px solid var(--line)', paddingTop: '.9rem', marginTop: '.3rem' }}>
+                  <p style={{ fontSize: '.64rem', fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--mid-gray)', marginBottom: '.7rem' }}>
+                    Contact & CTA Buttons (shown at bottom of story)
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="field-label-admin">Phone / WhatsApp</label>
+                      <input className="form-input-admin" placeholder="0712 345 678" value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} />
+                    </div>
+                    <div>
+                      <label className="field-label-admin">WhatsApp Number (if different)</label>
+                      <input className="form-input-admin" placeholder="0712 345 678" value={form.contactWhatsApp} onChange={(e) => setForm({ ...form, contactWhatsApp: e.target.value })} />
+                    </div>
+                    <div>
+                      <label className="field-label-admin">Email</label>
+                      <input type="email" className="form-input-admin" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} />
+                    </div>
+                    <div>
+                      <label className="field-label-admin">External Website / URL</label>
+                      <input type="url" className="form-input-admin" placeholder="https://…" value={form.ctaUrl} onChange={(e) => setForm({ ...form, ctaUrl: e.target.value })} />
+                    </div>
+                    <div className="col-span-2">
+                      <label className="field-label-admin">CTA Button Label</label>
+                      <input className="form-input-admin" placeholder="Visit Website / Book Now / Shop Now" value={form.ctaLabel} onChange={(e) => setForm({ ...form, ctaLabel: e.target.value })} />
+                      <p style={{ fontSize: '.6rem', color: 'var(--warm-gray)', marginTop: '.25rem' }}>
+                        Label for the main link button. Defaults to "Visit Website" if left blank.
+                      </p>
+                    </div>
+                  </div>
+                </div>
               </div>
-            </div>
-            <div>
-              <label className="field-label-admin">Pipeline Stage</label>
-              <select className="form-input-admin" value={form.stage} onChange={(e) => setForm({ ...form, stage: e.target.value as DealStage })}>
-                <option value="inquiry">Inquiry</option>
-                <option value="production">In Production</option>
-                <option value="live">Live</option>
-                <option value="completed">Completed</option>
-              </select>
-            </div>
-            <div className="flex gap-2 justify-end" style={{ marginTop: '.6rem' }}>
+            )}
+
+            <div className="flex gap-2 justify-end" style={{ marginTop: '.9rem', paddingTop: '.7rem', borderTop: '1px solid var(--line)' }}>
               <button type="button" className="btn-outline-admin" onClick={() => setModalOpen(false)}>Cancel</button>
-              <button type="submit" className="btn-gold-admin">Add Deal</button>
+              <button type="submit" className="btn-gold-admin">Save Deal</button>
             </div>
           </form>
         </div>

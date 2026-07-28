@@ -13,6 +13,7 @@ interface DisplayStory {
   id: string;
   size: 'large' | 'medium' | 'small';
   image: string;
+  images?: string[];
   category: string;
   title: string;
   excerpt?: string;
@@ -40,6 +41,7 @@ export default function StoriesPage() {
         id: s.id,
         size: getSizeClass(i),
         image: s.image,
+        images: s.images,
         category: s.category,
         title: s.title,
         excerpt: s.excerpt,
@@ -56,6 +58,7 @@ export default function StoriesPage() {
       excerpt: s.excerpt,
       body: s.body,
       image: s.image,
+      images: s.images,
       author: s.author,
       date: s.date,
     });

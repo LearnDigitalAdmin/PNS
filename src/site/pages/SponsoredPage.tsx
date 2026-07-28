@@ -1,7 +1,7 @@
 import { useSite } from '../context/SiteContext';
 
 export default function SponsoredPage() {
-  const { openModal, sponsoredStories, sponsoredLoading } = useSite();
+  const { openModal, openStoryModal, sponsoredStories, sponsoredLoading } = useSite();
 
   return (
     <div className="px-5 md:px-10 py-7 max-w-7xl mx-auto">
@@ -27,7 +27,20 @@ export default function SponsoredPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-7">
           {sponsoredStories.map((s) => (
-            <div className="story-card h-72 reveal" key={s.id}>
+            <div className="story-card h-72 reveal" key={s.id} style={{ cursor: 'pointer' }} onClick={() => openStoryModal({
+              title: s.title || s.business,
+              category: 'Sponsored Story',
+              excerpt: s.excerpt,
+              body: s.body,
+              image: s.image || '',
+              images: s.images,
+              isSponsored: true,
+              contactPhone: s.contactPhone,
+              contactEmail: s.contactEmail,
+              contactWhatsApp: s.contactWhatsApp,
+              ctaLabel: s.ctaLabel,
+              ctaUrl: s.ctaUrl,
+            })}>
               {s.image ? (
                 <img loading="lazy" decoding="async" src={s.image} className="absolute inset-0" />
               ) : (
@@ -44,6 +57,9 @@ export default function SponsoredPage() {
                     {s.excerpt}
                   </p>
                 )}
+                <button className="btn-outline-gold mt-2" style={{ fontSize: '.56rem', padding: '.28rem .7rem' }}>
+                  Read Story →
+                </button>
               </div>
             </div>
           ))}

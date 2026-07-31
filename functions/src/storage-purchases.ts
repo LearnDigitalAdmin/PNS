@@ -1,6 +1,7 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { defineSecret } from 'firebase-functions/params';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { formatKenyanPhone } from './phone';
 
 const db = getFirestore();
 
@@ -32,10 +33,12 @@ async function paystackFetch(path: string, options: RequestInit, secretKey: stri
  * subaccount/split involved — this is a platform product, not a
  * marketplace transaction, so the full amount goes to the platform.
  *
- * Crediting the extra storage happens ONLY from paystackWebhook on a
- * verified charge.success event, keyed off the storagePurchases doc created
- * here — never from this function directly, since this function returning
+ * Crediting the extra storage happens ONLY from the shared project's
+ * paystackCallback webhook (handlePNSStoragePurchase) on a verified
+ * charge.success event, keyed off the storagePurchases doc created here —
+ * never from this function directly, since this function returning
  * successfully only means "the STK push was sent," not "the customer paid."
+ * PNS does not run its own Paystack webhook — see paystack.ts.
  */
 export const purchaseStorage = onCall({ secrets: [PAYSTACK_SECRET_KEY] }, async (request) => {
   const uid = request.auth?.uid;
@@ -61,6 +64,11 @@ export const purchaseStorage = onCall({ secrets: [PAYSTACK_SECRET_KEY] }, async 
   const email = accountSnap.data()?.email || `${uid}@${collectionName}.pns.app`;
 
   const purchaseRef = db.collection('storagePurchases').doc();
+  const formattedPhone = formatKenyanPhone(phone);
+  // STORE_ prefix lets the webhook route this event by reference alone if
+  // metadata ever comes back missing — see determineChargeType in paystack.ts.
+  const reference = `STORE_${purchaseRef.id}_${Date.now()}`;
+
   await purchaseRef.set({
     uid,
     accountType,
@@ -78,8 +86,9 @@ export const purchaseStorage = onCall({ secrets: [PAYSTACK_SECRET_KEY] }, async 
         email,
         amount: amount * 100, // KES → cents
         currency: 'KES',
-        mobile_money: { phone, provider: 'mpesa' },
-        metadata: { type: 'storage_purchase', purchaseId: purchaseRef.id },
+        mobile_money: { phone: formattedPhone, provider: 'mpesa' },
+        reference,
+        metadata: { chargeType: 'storage_purchase', purchaseId: purchaseRef.id },
       }),
     },
     secretKey

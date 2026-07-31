@@ -50,8 +50,11 @@ export { castVote } from "./voting";
 // ── Reader delivery: session photos → matched reader's inbox by phone ─────
 export { deliverSessionToReader } from "./delivery";
 
-// ── Bookings + Paystack: subaccounts, M-Pesa STK push, webhook ────────────
-export { createPhotographerSubaccount, initiateBookingPayment, paystackWebhook } from "./paystack";
+// ── Bookings + Paystack: subaccounts, M-Pesa STK push charge creation ─────
+// NOTE: no webhook exported here. Paystack events for these charges are
+// received by the shared project's single `paystackCallback` webhook
+// (handlePNSBookingPayment / handlePNSStoragePurchase) — see that repo.
+export { createPhotographerSubaccount, initiateBookingPayment, listBanks } from "./paystack";
 
 // ── Storage purchases: buy more capacity via M-Pesa ────────────────────────
 export { purchaseStorage } from "./storage-purchases";

@@ -1,8 +1,8 @@
-import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https';
+import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { defineSecret } from 'firebase-functions/params';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
-import * as crypto from 'crypto';
 import * as logger from 'firebase-functions/logger';
+import { formatKenyanPhone } from './phone';
 
 const db = getFirestore();
 
@@ -11,14 +11,19 @@ const PAYSTACK_SECRET_KEY = defineSecret('PAYSTACK_SECRET_KEY');
 
 const PAYSTACK_API = 'https://api.paystack.co';
 
-// Platform's cut of every paid booking — mirrored in src/bookings/types.ts.
-// This is passed to Paystack as the subaccount's percentage_charge, which
-// (per Paystack's split model) is the percentage that settles to the
-// PLATFORM's main account; the remainder settles to the photographer's
-// subaccount. Double-check this against Paystack's current docs before
-// going live — split-payment semantics are the kind of thing worth
-// confirming against a live test transaction, not just documentation.
+// Platform's cut of every paid booking — mirrored in src/bookings/types.ts,
+// and in handlePNSBookingPayment() in the shared project's paystackCallback.
+// Change all three together if this changes.
 const PLATFORM_FEE_PERCENT = 10;
+
+// NOTE: there is deliberately no Paystack webhook exported from this file.
+// PNS deploys into the same Firebase project as the MyRegister functions,
+// and a Paystack account only has one webhook URL — so the single
+// `paystackCallback` webhook in that project's index.ts is the only place
+// that ever receives charge.success/charge.failed events, for every charge
+// type including these two. This file only ever *creates* charges; see
+// handlePNSBookingPayment / handlePNSStoragePurchase over there for what
+// happens once Paystack confirms them.
 
 async function paystackFetch(path: string, options: RequestInit, secretKey: string) {
   const res = await fetch(`${PAYSTACK_API}${path}`, {
@@ -35,6 +40,84 @@ async function paystackFetch(path: string, options: RequestInit, secretKey: stri
   }
   return json;
 }
+
+// ── Bank list lookup (module-scoped cache — banks don't change mid-instance) ─
+let banksCache: any[] | null = null;
+
+async function getPaystackBanks(secretKey: string, country = 'kenya'): Promise<any[]> {
+  if (banksCache) return banksCache;
+  try {
+    const result = await paystackFetch(`/bank?country=${country}`, { method: 'GET' }, secretKey);
+    banksCache = result.data ?? [];
+    return banksCache!;
+  } catch (err) {
+    logger.error('Failed to fetch Paystack bank list', err);
+    return [];
+  }
+}
+
+/**
+ * Resolves whatever the photographer typed (a Paystack bank code, a bank
+ * name, or "mpesa"/"airtel") to a real Paystack settlement_bank code, the
+ * same way the live MyRegister setupAccount function does it — free-text
+ * bank codes typed by hand are the single biggest source of failed
+ * subaccount creations, so this is worth doing server-side rather than
+ * trusting the client's input verbatim.
+ */
+async function resolveBankCode(input: string, secretKey: string): Promise<{ code: string; name: string | null }> {
+  const banks = await getPaystackBanks(secretKey);
+  const needle = input.trim().toLowerCase();
+
+  const exact = banks.find((b) => b.code?.toLowerCase() === needle);
+  if (exact) return { code: exact.code, name: exact.name };
+
+  const byName = banks.find((b) => b.name?.toLowerCase().includes(needle));
+  if (byName) return { code: byName.code, name: byName.name };
+
+  if (needle === 'mpesa' || needle === 'm-pesa') {
+    const mpesa = banks.find((b) => b.name?.toLowerCase().includes('m-pesa'));
+    if (mpesa) return { code: mpesa.code, name: mpesa.name };
+  }
+  if (needle === 'airtel' || needle === 'airtel-ke') {
+    const airtel = banks.find((b) => b.name?.toLowerCase().includes('airtel'));
+    if (airtel) return { code: airtel.code, name: airtel.name };
+  }
+
+  // Nothing matched — fall back to using the input as-is and let Paystack's
+  // own validation reject it with a clearer error than we could give here.
+  logger.warn(`resolveBankCode: no match for "${input}", passing through unresolved`);
+  return { code: input.trim(), name: null };
+}
+
+/**
+ * Formats a settlement account number the way Paystack expects it for
+ * Kenyan mobile money settlement banks: local format (0XXXXXXXXX), not
+ * international. Traditional bank account numbers are left untouched.
+ */
+function formatSettlementAccountNumber(accountNumber: string, bankName: string | null): string {
+  const isMobileMoney = !!bankName && /m-pesa|airtel/i.test(bankName);
+  if (!isMobileMoney) return accountNumber.replace(/[\s-]/g, '');
+
+  let formatted = accountNumber.replace(/[\s+-]/g, '');
+  if (formatted.startsWith('254')) {
+    formatted = '0' + formatted.substring(3);
+  } else if (!formatted.startsWith('0')) {
+    formatted = '0' + formatted;
+  }
+  return formatted;
+}
+
+/**
+ * Lists Paystack settlement banks for Kenya so the client can offer a real
+ * dropdown instead of asking photographers to type a bank code from
+ * memory. Mirrors the live MyRegister listBanks utility.
+ */
+export const listBanks = onCall({ secrets: [PAYSTACK_SECRET_KEY] }, async () => {
+  const banks = await getPaystackBanks(PAYSTACK_SECRET_KEY.value());
+  const mobileMoney = banks.filter((b) => /m-pesa|airtel/i.test(b.name ?? ''));
+  const traditional = banks.filter((b) => !/m-pesa|airtel/i.test(b.name ?? ''));
+  return { banks, categories: { mobileMoney, traditional } };
+});
 
 /**
  * Creates a Paystack subaccount for a photographer so their booking
@@ -55,15 +138,32 @@ export const createPhotographerSubaccount = onCall(
 
     const secretKey = PAYSTACK_SECRET_KEY.value();
 
+    const photographerRef = db.doc(`photographers/${uid}`);
+    const photographerSnap = await photographerRef.get();
+    if (!photographerSnap.exists) throw new HttpsError('not-found', 'Photographer profile not found.');
+    const photographer = photographerSnap.data()!;
+
+    const { code: resolvedBankCode, name: resolvedBankName } = await resolveBankCode(bankCode, secretKey);
+    const formattedAccountNumber = formatSettlementAccountNumber(accountNumber, resolvedBankName);
+    const contactPhone = formatKenyanPhone(photographer.phone ?? '');
+
+    logger.info(
+      `Setting up subaccount for photographer ${uid}: bank "${bankCode}" -> ${resolvedBankName ?? '(unresolved)'} (${resolvedBankCode})`
+    );
+
     const result = await paystackFetch(
       '/subaccount',
       {
         method: 'POST',
         body: JSON.stringify({
           business_name: businessName,
-          settlement_bank: bankCode,
-          account_number: accountNumber,
+          settlement_bank: resolvedBankCode,
+          account_number: formattedAccountNumber,
           percentage_charge: PLATFORM_FEE_PERCENT,
+          primary_contact_email: photographer.email || undefined,
+          primary_contact_name: businessName,
+          primary_contact_phone: contactPhone,
+          metadata: { uid, platform: 'pns' },
         }),
       },
       secretKey
@@ -71,20 +171,26 @@ export const createPhotographerSubaccount = onCall(
 
     const subaccountCode = result.data.subaccount_code as string;
 
-    await db.doc(`photographers/${uid}`).update({
+    await photographerRef.update({
       paystackSubaccountCode: subaccountCode,
-      payoutBankCode: bankCode,
-      payoutAccountNumber: accountNumber,
+      payoutBankCode: resolvedBankCode,
+      payoutBankName: resolvedBankName,
+      payoutAccountNumber: formattedAccountNumber,
       payoutSetupComplete: true,
+      payoutVerified: !!result.data.is_verified,
     });
 
-    return { subaccountCode };
+    return { subaccountCode, bankName: resolvedBankName };
   }
 );
 
 /**
  * Initiates an M-Pesa STK push for a booking that's been accepted by the
  * photographer. Only the reader who made the booking can trigger this.
+ *
+ * This only marks the booking "awaiting_payment". Nothing marks it "paid"
+ * except the shared paystackCallback webhook receiving a verified
+ * charge.success event — see handlePNSBookingPayment there.
  */
 export const initiateBookingPayment = onCall(
   { secrets: [PAYSTACK_SECRET_KEY] },
@@ -121,6 +227,11 @@ export const initiateBookingPayment = onCall(
     const secretKey = PAYSTACK_SECRET_KEY.value();
     const readerSnap = await db.doc(`readers/${readerId}`).get();
     const email = readerSnap.data()?.email || `${readerId}@readers.pns.app`; // Paystack requires an email
+    const formattedPhone = formatKenyanPhone(phone);
+
+    // BOOK_ prefix lets the shared webhook's determineChargeType route this
+    // event by reference alone if metadata ever comes back stripped.
+    const reference = `BOOK_${bookingId}_${Date.now()}`;
 
     const result = await paystackFetch(
       '/charge',
@@ -130,9 +241,10 @@ export const initiateBookingPayment = onCall(
           email,
           amount: Math.round(booking.amount * 100), // KES → cents
           currency: 'KES',
-          mobile_money: { phone, provider: 'mpesa' },
+          mobile_money: { phone: formattedPhone, provider: 'mpesa' },
           subaccount: subaccountCode,
-          metadata: { bookingId },
+          reference,
+          metadata: { chargeType: 'booking_payment', bookingId },
         }),
       },
       secretKey
@@ -147,82 +259,3 @@ export const initiateBookingPayment = onCall(
     return { reference: result.data.reference, displayText: result.data.display_text ?? null };
   }
 );
-
-/**
- * Paystack webhook — the actual source of truth for payment confirmation.
- * initiateBookingPayment only marks a booking "awaiting_payment"; nothing
- * marks it "paid" except this handler receiving a verified charge.success
- * event. Never trust a client to report its own payment succeeded.
- */
-export const paystackWebhook = onRequest(
-  { secrets: [PAYSTACK_SECRET_KEY] },
-  async (req, res) => {
-    const secretKey = PAYSTACK_SECRET_KEY.value();
-    const signature = req.headers['x-paystack-signature'] as string | undefined;
-
-    if (!signature || !req.rawBody) {
-      res.status(400).send('Missing signature or body');
-      return;
-    }
-
-    const expected = crypto.createHmac('sha512', secretKey).update(req.rawBody).digest('hex');
-    if (expected !== signature) {
-      logger.warn('Paystack webhook signature mismatch');
-      res.status(401).send('Invalid signature');
-      return;
-    }
-
-    const event = req.body;
-    const metadata = event?.data?.metadata ?? {};
-
-    try {
-      if (metadata.type === 'storage_purchase') {
-        await handleStoragePurchaseEvent(event, metadata.purchaseId);
-      } else if (metadata.bookingId) {
-        await handleBookingEvent(event, metadata.bookingId);
-      }
-      // Anything else (not one of ours, or malformed) is acknowledged and ignored.
-    } catch (err) {
-      logger.error('Webhook handling failed', err);
-    }
-
-    res.status(200).send('ok');
-  }
-);
-
-async function handleBookingEvent(event: any, bookingId: string) {
-  const bookingRef = db.doc(`bookings/${bookingId}`);
-  if (event.event === 'charge.success') {
-    await bookingRef.update({
-      status: 'paid',
-      paidAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
-    });
-  } else if (event.event === 'charge.failed') {
-    await bookingRef.update({ status: 'payment_failed', updatedAt: FieldValue.serverTimestamp() });
-  }
-}
-
-async function handleStoragePurchaseEvent(event: any, purchaseId: string | undefined) {
-  if (!purchaseId) return;
-  const purchaseRef = db.doc(`storagePurchases/${purchaseId}`);
-
-  if (event.event === 'charge.success') {
-    // Idempotency guard: Paystack can retry webhook delivery, and this must
-    // never credit storage twice for the same purchase.
-    await db.runTransaction(async (tx) => {
-      const snap = await tx.get(purchaseRef);
-      if (!snap.exists || snap.data()?.status === 'paid') return;
-
-      const { uid, accountType, gigabytes } = snap.data()!;
-      const collectionName = accountType === 'photographer' ? 'photographers' : 'readers';
-      const accountRef = db.doc(`${collectionName}/${uid}`);
-      const extraBytes = Math.round(gigabytes * (1024 * 1024 * 1024));
-
-      tx.update(accountRef, { storageCapBytes: FieldValue.increment(extraBytes) });
-      tx.update(purchaseRef, { status: 'paid', paidAt: FieldValue.serverTimestamp() });
-    });
-  } else if (event.event === 'charge.failed') {
-    await purchaseRef.update({ status: 'failed' });
-  }
-}

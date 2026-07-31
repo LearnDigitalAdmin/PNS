@@ -54,7 +54,7 @@ export const castVote = onCall(async (request) => {
     }
     if (!contestantSnap.exists) throw new HttpsError('not-found', 'Contestant not found.');
 
-    if (voterSnap.exists() && voterSnap.data()?.lastVoteDate === today) {
+    if (voterSnap.exists && voterSnap.data()?.lastVoteDate === today) {
       throw new HttpsError('already-exists', 'You already voted in this category today.');
     }
 

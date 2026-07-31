@@ -7,9 +7,12 @@
  * See a full list of supported triggers at https://firebase.google.com/docs/functions
  */
 
-import {setGlobalOptions} from "firebase-functions";
-import {onRequest} from "firebase-functions/https";
-import * as logger from "firebase-functions/logger";
+import { initializeApp } from "firebase-admin/app";
+import { setGlobalOptions } from "firebase-functions";
+
+// Admin SDK must be initialized before any other module (e.g. photographers.ts)
+// calls getFirestore()/getStorage() at import time.
+initializeApp();
 
 // Start writing functions
 // https://firebase.google.com/docs/functions/typescript
@@ -30,3 +33,28 @@ setGlobalOptions({ maxInstances: 10 });
 //   logger.info("Hello logs!", {structuredData: true});
 //   response.send("Hello from Firebase!");
 // });
+
+// ── Photographer marketplace: storage-cap enforcement + watermarking ──────
+export {
+  onGalleryImageUpload,
+  onSessionImageUpload,
+  onGalleryImageDeleted,
+  onSessionImageDeleted,
+  onPhotographerLiked,
+  onPhotographerUnliked,
+} from "./photographers";
+
+// ── Voting integrity: one vote per category per day, tied to accounts ─────
+export { castVote } from "./voting";
+
+// ── Reader delivery: session photos → matched reader's inbox by phone ─────
+export { deliverSessionToReader } from "./delivery";
+
+// ── Bookings + Paystack: subaccounts, M-Pesa STK push, webhook ────────────
+export { createPhotographerSubaccount, initiateBookingPayment, paystackWebhook } from "./paystack";
+
+// ── Storage purchases: buy more capacity via M-Pesa ────────────────────────
+export { purchaseStorage } from "./storage-purchases";
+
+// ── Growth: referral counting ──────────────────────────────────────────────
+export { onReaderReferred } from "./referrals";

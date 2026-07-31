@@ -20,7 +20,8 @@ import {
   Timestamp,
   type Unsubscribe,
 } from 'firebase/firestore';
-import { db } from './firebase';
+import { httpsCallable, FunctionsError } from 'firebase/functions';
+import { db, functions } from './firebase';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -128,17 +129,40 @@ export function subscribeToVotingCategories(
 
 // ─── Cast a vote ─────────────────────────────────────────────────────────────
 
+/**
+ * Thrown by castVoteInFirestore so callers can distinguish "already voted
+ * today" from other failures without parsing error strings.
+ */
+export class AlreadyVotedError extends Error {
+  constructor() {
+    super('You already voted in this category today.');
+    this.name = 'AlreadyVotedError';
+  }
+}
+
+/**
+ * Casts a vote via the castVote Cloud Function. This used to write directly
+ * to Firestore from the client, but that was only ever reachable through an
+ * open-catch-all rule that has since been closed (see firestore.rules) —
+ * direct writes to the contestants subcollection are admin-only now.
+ * Real vote integrity (one per category per day) is enforced server-side,
+ * tied to the signed-in reader's account. Requires the caller to be
+ * signed in — SiteContext/VotingPage gate the UI on that before calling
+ * this at all, but this will also reject cleanly if that gate is bypassed.
+ */
 export async function castVoteInFirestore(
   categoryId: string,
   contestantId: string
 ): Promise<void> {
-  const contRef = doc(db, 'votingCategories', categoryId, 'contestants', contestantId);
-  // Use a transaction to safely increment
-  await runTransaction(db, async (tx) => {
-    const snap = await tx.get(contRef);
-    if (!snap.exists()) throw new Error('Contestant not found');
-    tx.update(contRef, { votes: (snap.data().votes ?? 0) + 1 });
-  });
+  const castVote = httpsCallable(functions, 'castVote');
+  try {
+    await castVote({ categoryId, contestantId });
+  } catch (err) {
+    if (err instanceof FunctionsError && err.code === 'already-exists') {
+      throw new AlreadyVotedError();
+    }
+    throw err;
+  }
 }
 
 // ─── Conclude a contest ───────────────────────────────────────────────────────

@@ -12,9 +12,11 @@ import {
   subscribeToLiveStories,
   castVoteInFirestore,
   concludeContest,
+  AlreadyVotedError,
   type FSVotingCategory,
   type FSStory,
 } from '../../lib/firebaseVoting';
+import { useReaderAuth } from '../../readers/context/ReaderAuthContext';
 import {
   canPerformAction,
   recordAction,
@@ -116,6 +118,8 @@ interface SiteContextValue {
   prevContestant: (catIdx: number) => void;
   castVote: (catIdx: number) => Promise<void>;
   triggerConclude: (categoryId: string) => Promise<void>;
+  voteError: string | null;
+  clearVoteError: () => void;
 
   // shareable voting links
   sharedVoteTarget: SharedVoteTarget | null;
@@ -269,6 +273,9 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
   const [votingCategories, setVotingCategories] = useState<FSVotingCategory[]>([]);
   const [votingLoading, setVotingLoading] = useState(true);
   const [votingClient, setVotingClient] = useState<VotingClientState[]>([]);
+  const { currentUser: readerUser } = useReaderAuth();
+  const [voteError, setVoteError] = useState<string | null>(null);
+  const clearVoteError = useCallback(() => setVoteError(null), []);
   const concludingRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -340,6 +347,15 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
     if (!cat || !client || client.voted) return;
     if (cat.status !== 'open') return;
 
+    // Real vote integrity is enforced server-side, tied to the signed-in
+    // reader account (see functions/src/voting.ts) — this must be checked
+    // before even attempting the call, since an unauthenticated call will
+    // just be rejected by the Cloud Function anyway.
+    if (!readerUser) {
+      setVoteError('Sign in to vote.');
+      return;
+    }
+
     const actionKey = `vote_${cat.key}` as ActionKey;
     const allowed = await canPerformAction(actionKey);
     if (!allowed) return;
@@ -348,6 +364,7 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
     if (!current) return;
 
     try {
+      setVoteError(null);
       await castVoteInFirestore(cat.id, current.id);
       await recordAction(actionKey);
       setVotingClient((prev) => {
@@ -356,9 +373,21 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
         return next;
       });
     } catch (err) {
-      console.error('Vote failed:', err);
+      if (err instanceof AlreadyVotedError) {
+        // Server says they already voted today (e.g. via another device) —
+        // reflect that in the UI same as a fresh successful vote would.
+        await recordAction(actionKey);
+        setVotingClient((prev) => {
+          const next = [...prev];
+          if (next[catIdx]) next[catIdx] = { ...next[catIdx], voted: true };
+          return next;
+        });
+      } else {
+        console.error('Vote failed:', err);
+        setVoteError('Could not cast your vote. Please try again.');
+      }
     }
-  }, [votingCategories, votingClient]);
+  }, [votingCategories, votingClient, readerUser]);
 
   const triggerConclude = useCallback(async (categoryId: string) => {
     if (concludingRef.current.has(categoryId)) return;
@@ -559,6 +588,7 @@ export function SiteProvider({ children }: { children: React.ReactNode }) {
     liveStories, storiesLoading,
     votingCategories, votingLoading, votingClient,
     goToContestant, nextContestant, prevContestant, castVote, triggerConclude,
+    voteError, clearVoteError,
     sharedVoteTarget, consumeSharedVoteTarget, buildShareUrl,
     buildStoryShareUrl,
     sharedLinkLoading,

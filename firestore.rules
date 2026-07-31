@@ -2,13 +2,28 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-  	match /{document=**} {
-  	allow read, write: if true;
-  	}
+
+    // ─────────────────────────────────────────────────────────────────────
+    // NOTE: the old `match /{document=**} { allow read, write: if true; }`
+    // catch-all has been removed. Firestore unions ALL matching rules for a
+    // given path — a permissive catch-all at any level overrides every more
+    // specific rule below it, which meant the whole database was public
+    // read/write regardless of isAdmin() checks. Do not re-add a bare
+    // catch-all above specific rules.
+    // ─────────────────────────────────────────────────────────────────────
 
     function isAdmin() {
       return request.auth != null &&
+             request.auth.token.email != null &&
              request.auth.token.email.matches('.*@cogvana\\.co\\.ke');
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isPhotographerOwner(photographerId) {
+      return isSignedIn() && request.auth.uid == photographerId;
     }
 
     function isValidRequest() {
@@ -18,65 +33,212 @@ service cloud.firestore {
     }
 
     // ── Public request submissions (subcollection pattern) ────────────────
-    // Clients can only CREATE (write) new pending requests.
-    // Only admins can read, update (change status), or delete.
-
     match /requests/{type}/items/{itemId} {
       allow create: if isValidRequest();
       allow read, update, delete: if isAdmin();
     }
 
-    // ── Stories ──────────────────────────────────────────────────────────────
-    // Public read (site displays live stories); admin writes.
+    // ── Stories ─────────────────────────────────────────────────────────
     match /stories/{storyId} {
       allow read: if true;
       allow write: if isAdmin();
     }
 
-    // ── Partners ─────────────────────────────────────────────────────────────
+    // ── Partners (legacy admin-curated directory — distinct from the
+    //    self-serve photographer marketplace below) ───────────────────────
     match /partners/{partnerId} {
       allow read: if true;
       allow write: if isAdmin();
     }
 
-    // ── Sponsored deals pipeline ─────────────────────────────────────────────
+    // ── Sponsored deals pipeline ───────────────────────────────────────────
     match /sponsoredDeals/{dealId} {
-      allow read: if isAdmin();
-      allow write: if isAdmin();
+      allow read, write: if isAdmin();
     }
 
-    // ── Gallery ──────────────────────────────────────────────────────────────
+    // ── Gallery (site's own editorial gallery) ─────────────────────────────
     match /gallery/{imgId} {
       allow read: if true;
       allow write: if isAdmin();
     }
 
-    // ── Products / shop ──────────────────────────────────────────────────────
+    // ── Products / shop ─────────────────────────────────────────────────
     match /products/{productId} {
       allow read: if true;
       allow write: if isAdmin();
     }
 
-    // ── Voting categories (admin-managed, public read for display) ────────────
+    // ── Voting categories ───────────────────────────────────────────────
     match /votingCategories/{catId} {
       allow read: if true;
       allow write: if isAdmin();
+
+      // Contestants: public read for the leaderboard, but no client writes.
+      // Every real vote goes through the castVote Cloud Function (Admin
+      // SDK, bypasses these rules) — see functions/src/voting.ts. This was
+      // previously reachable only via the open catch-all that's now
+      // removed; do not "fix" broken voting by loosening this back to a
+      // client-writable rule, since that would let anyone script unlimited
+      // votes. Fix it in the Cloud Function instead.
+      match /contestants/{contestantId} {
+        allow read: if true;
+        allow write: if isAdmin();
+      }
+
+      // One doc per reader who has ever voted in this category, tracking
+      // their last vote date — this is what castVote checks to enforce one
+      // vote per day. Function-only write; a reader may read their own.
+      match /voters/{readerId} {
+        allow read: if isSignedIn() && request.auth.uid == readerId;
+        allow write: if false;
+      }
     }
-    
-    // match /users/{userId} {
-    // 	allow read: if true;
-    //   allow write, delete, update: if request.auth != null;
-    // }
-    // match /agents/{agentId}/uploads {
-    //   allow read, write: if true;
-    // }
-    
-    // match /agents/{agentId} {
-    //   allow read, write: if true;
-    // }
-    
-    // match /agents/{agentId}/products/{id} {
-    //   allow read, write: if true;
-    // }
+
+    // ── Photographer marketplace ──────────────────────────────────────────
+    // Doc id === the photographer's Firebase Auth uid, which is what lets
+    // isPhotographerOwner() work as a simple uid comparison.
+    match /photographers/{photographerId} {
+      allow read: if true; // public directory + profile pages
+
+      // Self-serve signup: owner may create their own doc, but cannot
+      // create themselves pre-verified or pre-suspended.
+      allow create: if isPhotographerOwner(photographerId)
+                    && request.resource.data.uid == photographerId
+                    && request.resource.data.status == 'active'
+                    && request.resource.data.verified == false;
+
+      // Owner can edit their own profile, but cannot touch verified/status
+      // (those are admin-only levers). Admin can edit anything.
+      allow update: if isAdmin()
+                    || (
+                      isPhotographerOwner(photographerId) &&
+                      request.resource.data.verified == resource.data.verified &&
+                      request.resource.data.status == resource.data.status
+                    );
+
+      allow delete: if isAdmin();
+
+      // Public portfolio images. imageUrl/thumbUrl are watermarked copies
+      // written by the onGalleryImageUpload Cloud Function and are safe to
+      // be world-readable. originalUrl stores a Storage PATH (not a public
+      // download URL) under photographer-private/**, which storage.rules
+      // restricts to owner/admin — so even though this doc is public-read,
+      // the original stays inaccessible. Never call getDownloadURL() on
+      // originalUrl from a public-facing route.
+      match /gallery/{imageId} {
+        allow read: if true;
+        allow write: if isPhotographerOwner(photographerId) || isAdmin();
+      }
+
+      // Existence of a like doc keyed by the liking user's uid == "liked".
+      // Prevents double-likes; only the liking user can create/remove theirs.
+      match /likes/{userId} {
+        allow read: if true;
+        allow create, delete: if isSignedIn() && request.auth.uid == userId;
+        allow update: if false;
+      }
+
+      // Shoot sessions + client delivery matching — entirely private,
+      // owner/admin only. Never exposed on any public route.
+      match /sessions/{sessionId} {
+        allow read, write: if isPhotographerOwner(photographerId) || isAdmin();
+
+        match /clientEntries/{entryId} {
+          allow read, write: if isPhotographerOwner(photographerId) || isAdmin();
+        }
+
+        match /images/{imageId} {
+          allow read, write: if isPhotographerOwner(photographerId) || isAdmin();
+        }
+      }
+    }
+
+    // ── Reader accounts ────────────────────────────────────────────────────
+    // Doc id === the reader's Firebase Auth uid, same pattern as
+    // photographers. No public read: unlike a photographer profile, a
+    // reader's doc holds their phone number (used for delivery matching)
+    // and has no reason to ever be shown to anyone else.
+    match /readers/{readerId} {
+      allow read, update: if isAdmin() || (isSignedIn() && request.auth.uid == readerId);
+
+      allow create: if isSignedIn() && request.auth.uid == readerId
+                    && request.resource.data.uid == readerId;
+
+      allow delete: if isAdmin();
+
+      // Delivered photos from a photographer's shoot session. Written only
+      // by deliverSessionToReader (Admin SDK) — never by a client, since a
+      // reader has no legitimate reason to write their own delivery record.
+      match /deliveries/{deliveryId} {
+        allow read: if isAdmin() || (isSignedIn() && request.auth.uid == readerId);
+        allow write: if isAdmin();
+      }
+    }
+
+    // ── Bookings ────────────────────────────────────────────────────────────
+    // Payment-status transitions (awaiting_payment → paid/payment_failed)
+    // happen only via initiateBookingPayment / paystackWebhook (Admin SDK),
+    // never through a client write — see functions/src/paystack.ts. The
+    // client-writable transitions here are just the human parts: a reader
+    // requesting/cancelling, a photographer accepting/declining/setting the
+    // amount.
+    match /bookings/{bookingId} {
+      allow read: if isAdmin()
+                  || (isSignedIn() && (
+                        request.auth.uid == resource.data.readerId ||
+                        request.auth.uid == resource.data.photographerId
+                      ));
+
+      allow create: if isSignedIn()
+                    && request.resource.data.readerId == request.auth.uid
+                    && request.resource.data.status == 'requested';
+
+      // Reader may only cancel their own still-pending request.
+      // Photographer may decline any still-requested booking freely, but
+      // may only ACCEPT one if their own payout account is connected —
+      // checked here server-side (not just warned about in the UI) so a
+      // client can't accept a booking it has no way to ever get paid out
+      // for, leaving a reader stuck mid-flow.
+      allow update: if isAdmin()
+                    || (
+                      isSignedIn() && request.auth.uid == resource.data.readerId &&
+                      resource.data.status == 'requested' &&
+                      request.resource.data.status == 'cancelled'
+                    )
+                    || (
+                      isSignedIn() && request.auth.uid == resource.data.photographerId &&
+                      resource.data.status == 'requested' &&
+                      request.resource.data.status == 'declined'
+                    )
+                    || (
+                      isSignedIn() && request.auth.uid == resource.data.photographerId &&
+                      resource.data.status == 'requested' &&
+                      request.resource.data.status == 'accepted' &&
+                      get(/databases/$(database)/documents/photographers/$(request.auth.uid)).data.payoutSetupComplete == true
+                    );
+
+      allow delete: if isAdmin();
+    }
+
+    // ── Storage purchases ──────────────────────────────────────────────────
+    // Created by purchaseStorage (still Admin SDK, but included here for
+    // completeness in case a client ever reads its own purchase history).
+    // Status only ever moves pending → paid/failed via the webhook.
+    match /storagePurchases/{purchaseId} {
+      allow read: if isAdmin() || (isSignedIn() && request.auth.uid == resource.data.uid);
+      allow write: if isAdmin();
+    }
+
+    // ── Reports (trust-first moderation) ──────────────────────────────────
+    // Anyone (including anonymous) can file a report; only admins can read
+    // or triage the queue. Shape-validated so junk/garbage writes can't land.
+    match /reports/{reportId} {
+      allow create: if request.resource.data.keys().hasAll(
+                        ['targetType', 'targetId', 'photographerId', 'reason', 'status', 'createdAt']
+                      )
+                    && request.resource.data.status == 'open'
+                    && request.resource.data.targetType in ['photographer', 'galleryImage'];
+      allow read, update, delete: if isAdmin();
+    }
   }
 }

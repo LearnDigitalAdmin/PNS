@@ -1,38 +1,60 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
-    // uploads folder - public write, authenticated read
-    match /uploads/{allPaths=**} {
-      allow write: if true;
-      allow read: if true;
-    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // NOTE: the old trailing `match /{allPaths=**} { allow read, write: if
+    // true; }` catch-all has been removed. Like Firestore, Storage rules
+    // union ALL matching rules for a path — that catch-all made every file
+    // in the bucket publicly writable regardless of the specific rules
+    // above it. Do not re-add a bare `{allPaths=**}` allow-all.
+    // ─────────────────────────────────────────────────────────────────────
 
     function isAdmin() {
       return request.auth != null &&
+             request.auth.token.email != null &&
              request.auth.token.email.matches('.*@cogvana\\.co\\.ke');
     }
 
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isPhotographerOwner(photographerId) {
+      return isSignedIn() && request.auth.uid == photographerId;
+    }
+
     function isValidImageUpload() {
-      return request.resource.size < 10 * 1024 * 1024 // 10 MB max
+      return request.resource.size < 15 * 1024 * 1024 // 15 MB per file
           && request.resource.contentType.matches('image/(jpeg|jpg|png)');
     }
 
-    // ── Public application uploads (Apply to Feature form) ───────────────────
-    // Anonymous visitors can upload exactly one image per submission;
-    // enforced as JPG/JPEG/PNG, 10 MB max, at the client too.
+    // Session/delivery uploads can be a PDF (contract, printable album,
+    // certificate) alongside the usual photos — portfolio uploads stay
+    // image-only via isValidImageUpload above, since a PDF wouldn't render
+    // sensibly as a watermarked public gallery item anyway.
+    function isValidSessionUpload() {
+      return request.resource.size < 30 * 1024 * 1024 // 30 MB — album exports run bigger than a single photo
+          && (
+            request.resource.contentType.matches('image/(jpeg|jpg|png)') ||
+            request.resource.contentType == 'application/pdf'
+          );
+    }
+
+    // ── Public application uploads (Apply to Feature form) ────────────────
     match /applications/{appType}/{allPaths=**} {
       allow create: if isValidImageUpload();
       allow read: if true;
       allow update, delete: if isAdmin();
     }
 
-    // ── Generic legacy uploads folder (kept for backwards-compat) ─────────────
+    // ── Generic legacy uploads folder ──────────────────────────────────────
     match /uploads/{allPaths=**} {
       allow write: if isValidImageUpload();
       allow read: if true;
     }
 
-    // ── Products / stories / contestants / gallery — admin uploads only ──────
+    // ── Products / stories / contestants / gallery — admin uploads only ───
     match /products/{allPaths=**} {
       allow read: if true;
       allow write: if isAdmin() && isValidImageUpload();
@@ -50,15 +72,43 @@ service firebase.storage {
       allow write: if isAdmin() && isValidImageUpload();
     }
 
-    // products folder - public read, no write
-    match /products/{allPaths=**} {
-      allow read: if true;
-      allow write: if request.auth != null;
+    // ── Photographer PRIVATE originals ──────────────────────────────────────
+    // Unwatermarked, full-resolution files land here on upload. The
+    // onGalleryImageUpload Cloud Function reads from this prefix and writes
+    // watermarked copies to the PUBLIC prefix below — it uses the Admin SDK,
+    // which bypasses these rules entirely, so no client-facing rule needs to
+    // permit that write. Nothing under this prefix is ever meant to be
+    // public; do not add a public read rule here.
+    match /photographer-private/{photographerId}/gallery/{allPaths=**} {
+      allow read, write: if isPhotographerOwner(photographerId) || isAdmin();
     }
 
-    // all other folders - authenticated only
-    match /{allPaths=**} {
-      allow read, write: if true;//request.auth != null;
+    // ── Photographer PUBLIC portfolio (watermarked display + thumb only) ───
+    // Only the Cloud Function (Admin SDK) and admins write here in normal
+    // operation. Owner delete is allowed so removing a portfolio item also
+    // removes its public files immediately from the client.
+    match /photographers/{photographerId}/gallery/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin();
+      allow delete: if isPhotographerOwner(photographerId) || isAdmin();
+    }
+
+    // ── Photographer shoot-session uploads (private, delivery matching) ───
+    // Never publicly readable — raw camera dumps awaiting client matching,
+    // not portfolio content. No watermarking applied; full quality is the
+    // point, since these get delivered to the actual client. Accepts PDFs
+    // (e.g. a printable album or contract) alongside photos.
+    match /photographers/{photographerId}/sessions/{allPaths=**} {
+      allow read: if isPhotographerOwner(photographerId) || isAdmin();
+      allow write: if (isPhotographerOwner(photographerId) && isValidSessionUpload()) || isAdmin();
+    }
+
+    // ── Reader photo inbox (Phase 2 dependency, path reserved now) ─────────
+    // Download-only for the owning reader; no reader uploads. Writes happen
+    // server-side (Admin SDK) as part of the Phase 2 delivery flow.
+    match /readers/{readerId}/inbox/{allPaths=**} {
+      allow read: if isSignedIn() && request.auth.uid == readerId;
+      allow write: if isAdmin();
     }
   }
 }

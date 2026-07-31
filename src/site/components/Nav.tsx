@@ -1,9 +1,12 @@
+import { Link } from 'react-router-dom';
 import { useSite } from '../context/SiteContext';
+import { useReaderAuth } from '../../readers/context/ReaderAuthContext';
 
 const NAV_LINKS = ['Stories', 'Voting', 'Cogvana', 'Services', 'Partners', 'Sponsored', 'Shop', 'Book'];
 
 export default function Nav() {
   const { goToPage, toggleMobileMenu, mobileMenuOpen, openModal, siteSettings } = useSite();
+  const { currentUser: reader, profile: readerProfile } = useReaderAuth();
   const tickerItems = [...siteSettings.tickerMessages, ...siteSettings.tickerMessages];
 
   return (
@@ -42,6 +45,12 @@ export default function Nav() {
           ))}
         </div>
         <div className="hidden lg:flex items-center gap-3">
+          <Link
+            to="/account"
+            style={{ fontSize: '.6rem', letterSpacing: '.08em', color: 'rgba(255,255,255,.85)', textTransform: 'uppercase', textDecoration: 'none' }}
+          >
+            {reader ? (readerProfile?.displayName?.split(' ')[0] || 'Account') : 'Sign In'}
+          </Link>
           <button onClick={() => openModal('bookModal')} className="btn-outline-gold" style={{ fontSize: '.6rem', padding: '.46rem 1rem' }}>
             Book A Shoot
           </button>

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { rewardsStrip } from '../data';
 import { useSite } from '../context/SiteContext';
+import { useReaderAuth } from '../../readers/context/ReaderAuthContext';
 import {
   canPerformAction,
   msUntilReset,
@@ -177,7 +179,8 @@ interface CategoryPanelProps {
 }
 
 function CategoryPanel({ catIdx, category, hidden }: CategoryPanelProps) {
-  const { votingClient, goToContestant, nextContestant, prevContestant, castVote, triggerConclude } = useSite();
+  const { votingClient, goToContestant, nextContestant, prevContestant, castVote, triggerConclude, voteError, clearVoteError } = useSite();
+  const { currentUser: reader } = useReaderAuth();
   const { allowed, remainingMs } = useVoteGate(category.key);
   const client = votingClient[catIdx];
   const countdown = useLiveCountdown(category);
@@ -213,6 +216,8 @@ function CategoryPanel({ catIdx, category, hidden }: CategoryPanelProps) {
 
   async function handleVote() {
     if (!isOpen || hasVoted || allowed === null) return;
+    if (!reader) return; // button renders as a sign-in link in this state, see below
+    clearVoteError();
     await castVote(catIdx);
   }
 
@@ -355,21 +360,37 @@ function CategoryPanel({ catIdx, category, hidden }: CategoryPanelProps) {
             </div>
           )}
 
+          {voteError && (
+            <div style={{ background: 'rgba(220,38,38,.1)', border: '1px solid rgba(220,38,38,.3)', padding: '.5rem .7rem', marginTop: '.6rem', marginBottom: '.2rem', fontSize: '.68rem', color: '#f87171', textAlign: 'center' }}>
+              {voteError}
+            </div>
+          )}
+
           {/* Vote button */}
           {!isClosed ? (
-            <button
-              className={`vote-btn-big mt-3 ${hasVoted ? 'voted' : ''}`}
-              onClick={handleVote}
-              disabled={hasVoted || allowed === null || !isOpen}
-            >
-              {allowed === null
-                ? '…'
-                : category.status === 'scheduled'
-                ? '⏳ Voting not open yet'
-                : hasVoted
-                ? '✦ Voted!'
-                : '✦ Vote for This Contestant'}
-            </button>
+            !reader ? (
+              <Link
+                to="/account"
+                className="vote-btn-big mt-3"
+                style={{ display: 'block', textAlign: 'center', textDecoration: 'none' }}
+              >
+                Sign in to vote
+              </Link>
+            ) : (
+              <button
+                className={`vote-btn-big mt-3 ${hasVoted ? 'voted' : ''}`}
+                onClick={handleVote}
+                disabled={hasVoted || allowed === null || !isOpen}
+              >
+                {allowed === null
+                  ? '…'
+                  : category.status === 'scheduled'
+                  ? '⏳ Voting not open yet'
+                  : hasVoted
+                  ? '✦ Voted!'
+                  : '✦ Vote for This Contestant'}
+              </button>
+            )
           ) : (
             <div style={{ marginTop: '.8rem', padding: '.7rem', background: 'rgba(201,168,76,.1)', border: '1px solid rgba(201,168,76,.25)', textAlign: 'center' }}>
               <p style={{ fontSize: '.72rem', color: 'var(--gold)', fontWeight: 600 }}>

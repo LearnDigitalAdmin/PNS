@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 import { useAdminData } from './context/AdminDataContext';
 import { useAdminAuth } from './context/AdminAuthContext';
 
@@ -20,6 +22,14 @@ const NAV_GROUPS = [
     label: 'System',
     links: [{ to: '/admin/system', label: 'Activity, Security & Settings', icon: 'M12 2 4 6v6c0 5 3.5 8 8 10 4.5-2 8-5 8-10V6l-8-4Z' }],
   },
+  {
+    label: 'Marketplace',
+    links: [
+      { to: '/admin/photographers', label: 'Photographers', icon: 'M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2Z' },
+      { to: '/admin/bookings', label: 'Bookings', icon: 'M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z' },
+      { to: '/admin/reports', label: 'Reports', icon: 'M12 9v4M12 17h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z' },
+    ],
+  },
 ];
 
 export default function AdminShell() {
@@ -30,6 +40,12 @@ export default function AdminShell() {
   const [profileOpen, setProfileOpen] = useState(false);
 
   const pendingCount = Object.values(requests).flat().filter((r) => r.status === 'pending').length;
+
+  const [openReportsCount, setOpenReportsCount] = useState(0);
+  useEffect(() => {
+    const q = query(collection(db, 'reports'), where('status', '==', 'open'));
+    return onSnapshot(q, (snap) => setOpenReportsCount(snap.size));
+  }, []);
 
   // Derive display name from email: "editor@cogvana.co.ke" → "Editor"
   const userEmail = currentUser?.email ?? '';
@@ -116,6 +132,9 @@ export default function AdminShell() {
                   {link.label}
                   {group.label === 'Business' && pendingCount > 0 && (
                     <span className="count">{pendingCount}</span>
+                  )}
+                  {link.label === 'Reports' && openReportsCount > 0 && (
+                    <span className="count">{openReportsCount}</span>
                   )}
                 </NavLink>
               ))}

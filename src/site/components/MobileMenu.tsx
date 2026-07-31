@@ -1,4 +1,6 @@
+import { Link } from 'react-router-dom';
 import { useSite } from '../context/SiteContext';
+import { useReaderAuth } from '../../readers/context/ReaderAuthContext';
 
 const ITEMS: { label: string; page: number }[] = [
   { label: 'Home', page: 0 },
@@ -14,6 +16,7 @@ const ITEMS: { label: string; page: number }[] = [
 
 export default function MobileMenu() {
   const { mobileMenuOpen, toggleMobileMenu, goToPage, openModal } = useSite();
+  const { currentUser: reader, profile: readerProfile } = useReaderAuth();
 
   return (
     <div id="mobile-menu" className={mobileMenuOpen ? 'open' : ''} style={{ background: 'var(--deep)' }}>
@@ -30,6 +33,14 @@ export default function MobileMenu() {
             {item.label}
           </span>
         ))}
+        <Link
+          to="/account"
+          onClick={toggleMobileMenu}
+          className="font-display text-2xl font-bold"
+          style={{ color: 'var(--gold, #c9a84c)', textDecoration: 'none' }}
+        >
+          {reader ? (readerProfile?.displayName?.split(' ')[0] || 'My Account') : 'Sign In'}
+        </Link>
         <div className="flex gap-3 pt-2">
           <button
             onClick={() => {

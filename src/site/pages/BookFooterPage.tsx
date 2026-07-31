@@ -264,6 +264,9 @@ export default function BookFooterPage() {
             <span className="text-xs cursor-pointer hover:text-yellow-600 transition-colors" onClick={() => openModal('applyModal')}>
               Apply
             </span>
+            <Link to="/partners" className="text-xs cursor-pointer" style={{ color: 'rgba(201,168,76,.55)' }}>
+              Photographer Login
+            </Link>
             <Link to="/admin" className="text-xs cursor-pointer" style={{ color: 'rgba(201,168,76,.55)' }}>
               Editor Login
             </Link>

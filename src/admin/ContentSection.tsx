@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { storage } from '../lib/firebase';
+import { optimizeImage } from '../lib/imageOptimize';
 import { useAdminData } from './context/AdminDataContext';
 import { ICONS, EmptyState } from './icons';
 import type { AdminStory, StoryStatus, GallerySection } from './types';
@@ -20,11 +21,12 @@ function useStorageUpload(folder: string) {
     setUploading(true);
     setError(null);
     setProgress(0);
-    const ext = file.name.split('.').pop();
+    const optimized = await optimizeImage(file);
+    const ext = optimized.name.split('.').pop();
     const path = `${folder}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
     const storageRef = ref(storage, path);
     return new Promise((resolve, reject) => {
-      const task = uploadBytesResumable(storageRef, file);
+      const task = uploadBytesResumable(storageRef, optimized);
       task.on(
         'state_changed',
         (snap) => setProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)),

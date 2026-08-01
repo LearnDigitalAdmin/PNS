@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { heroSlides as demoSlides } from '../data';
 import { useSite } from '../context/SiteContext';
 import type { HeroAction } from '../types';
-import { FSStory } from '../../lib/firebaseVoting';
+import type { FSStory } from '../../lib/firebaseVoting';
 
 
 // Convert a live FSStory into the hero slide shape
@@ -40,8 +40,37 @@ export default function HeroPage() {
     ? liveStories.slice(0, 5).map((s) => storyToSlide(s))
     : demoSlides;
 
-  // Reset to slide 0 when slide list changes (e.g. first load)
-  useEffect(() => { setSlide(0); }, [slides.length]);
+  // Which slide indices are allowed to mount an <img> at all. The slides
+  // crossfade via `position:absolute` + opacity (see .hero-slide in
+  // index.css), so every slide sits inside the viewport regardless of
+  // which one is visually "active" — the browser's native loading="lazy"
+  // heuristic is intersection-based, not opacity-based, so it can't tell
+  // inactive slides apart from the active one and will fetch all of them
+  // immediately. We work around that by only rendering the <img> tag for
+  // the current slide and the one coming up next, so the other 3-4 full
+  // hero images never get requested at all until their turn arrives.
+  const [mountedSlides, setMountedSlides] = useState<Set<number>>(() => new Set([0]));
+
+  // Reset to slide 0 and clear mounted state when the slide list changes
+  // (e.g. demo slides swapped out once live stories arrive).
+  useEffect(() => {
+    setSlide(0);
+    setMountedSlides(new Set([0]));
+  }, [slides.length]);
+
+  // Keep the active slide mounted, and pre-mount the next one so its image
+  // has a head start before the crossfade needs it.
+  useEffect(() => {
+    if (slides.length === 0) return;
+    const upcoming = (slide + 1) % slides.length;
+    setMountedSlides((prev) => {
+      if (prev.has(slide) && prev.has(upcoming)) return prev;
+      const next = new Set(prev);
+      next.add(slide);
+      next.add(upcoming);
+      return next;
+    });
+  }, [slide, slides.length]);
 
   const resetBar = () => {
     const bar = barRef.current;
@@ -85,7 +114,15 @@ export default function HeroPage() {
     <section id="hero">
       {slides.map((s, i) => (
         <div className={`hero-slide ${i === slide ? 'active' : ''}`} key={s.id}>
-          <img decoding="async" src={s.image} alt={s.badge} loading={i === 0 ? 'eager' : 'eager'} />
+          {mountedSlides.has(i) && (
+            <img
+              decoding="async"
+              src={s.image}
+              alt={s.badge}
+              loading={i === 0 ? 'eager' : 'lazy'}
+              {...({ fetchpriority: i === 0 ? 'high' : 'low' } as Record<string, string>)}
+            />
+          )}
           <div className="hero-overlay" />
           <div className="hero-content max-w-6xl mx-auto">
             <div className="max-w-xl">

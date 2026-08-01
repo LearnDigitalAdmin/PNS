@@ -2,6 +2,7 @@ import React, { useRef, useState, useEffect } from 'react';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '../../lib/firebase';
+import { optimizeImage } from '../../lib/imageOptimize';
 import { useSite } from '../context/SiteContext';
 import {
   canPerformAction,
@@ -169,11 +170,12 @@ function ImageUploadField({
     setUploading(true);
     setProgress(0);
 
-    const ext = file.name.split('.').pop();
+    const optimized = await optimizeImage(file);
+    const ext = optimized.name.split('.').pop();
     const storagePath = `${folder}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
     const storageRef = ref(storage, storagePath);
 
-    const task = uploadBytesResumable(storageRef, file);
+    const task = uploadBytesResumable(storageRef, optimized);
     task.on(
       'state_changed',
       (snap) => setProgress(Math.round((snap.bytesTransferred / snap.totalBytes) * 100)),

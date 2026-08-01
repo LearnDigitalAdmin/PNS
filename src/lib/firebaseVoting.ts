@@ -11,6 +11,8 @@ import {
   onSnapshot,
   query,
   orderBy,
+  where,
+  limit,
   runTransaction,
   addDoc,
   updateDoc,
@@ -300,14 +302,18 @@ export interface FSStory {
 export function subscribeToLiveStories(
   onChange: (stories: FSStory[]) => void
 ): Unsubscribe {
+  // Filter to status === 'live' and cap the result set server-side so we
+  // never download draft/scheduled documents (or an unbounded history of
+  // old stories) just to render the hero's top few slides. Requires a
+  // composite index on (status ASC, createdAt DESC) — see firestore.indexes.json.
   const q = query(
     collection(db, 'stories'),
-    orderBy('createdAt', 'desc')
+    where('status', '==', 'live'),
+    orderBy('createdAt', 'desc'),
+    limit(20)
   );
   return onSnapshot(q, (snap) => {
-    const live = snap.docs
-      .map((d) => ({ id: d.id, ...d.data() } as FSStory))
-      .filter((s) => s.status === 'live');
+    const live = snap.docs.map((d) => ({ id: d.id, ...d.data() } as FSStory));
     onChange(live);
   });
 }

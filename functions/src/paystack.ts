@@ -16,6 +16,27 @@ const PAYSTACK_API = 'https://api.paystack.co';
 // Change all three together if this changes.
 const PLATFORM_FEE_PERCENT = 10;
 
+// Smallest amount a booking can be for. Mirrored in src/bookings/types.ts —
+// also enforced in firestore.rules on booking creation, so this is really
+// just a second line of defense for the amount actually charged.
+const MIN_BOOKING_FEE_KES = 100;
+
+// Paystack's transaction fee, passed through to the customer rather than
+// absorbed by the platform or the photographer. Mirrored in
+// src/bookings/types.ts (which only uses it to *display* the total before
+// the charge is created — this copy is the actual source of truth for what
+// gets charged).
+const PAYSTACK_FEE_PERCENT = 2.9;
+
+// Grosses up the agreed booking amount so that, after Paystack deducts its
+// percentage fee from the total charged, the full agreed amount remains for
+// the platform/photographer split — see the subaccount's percentage_charge
+// in createPhotographerSubaccount below. Rounded up since M-Pesa charges
+// don't take fractional shillings.
+function grossUpForPaystackFee(baseAmountKes: number): number {
+  return Math.ceil(baseAmountKes / (1 - PAYSTACK_FEE_PERCENT / 100));
+}
+
 // NOTE: there is deliberately no Paystack webhook exported from this file.
 // PNS deploys into the same Firebase project as the MyRegister functions,
 // and a Paystack account only has one webhook URL — so the single
@@ -217,6 +238,9 @@ export const initiateBookingPayment = onCall(
     if (!booking.amount || booking.amount <= 0) {
       throw new HttpsError('failed-precondition', 'No amount has been set for this booking yet.');
     }
+    if (booking.amount < MIN_BOOKING_FEE_KES) {
+      throw new HttpsError('failed-precondition', `Booking amount is below the KSh ${MIN_BOOKING_FEE_KES} minimum.`);
+    }
 
     const photographerSnap = await db.doc(`photographers/${booking.photographerId}`).get();
     const subaccountCode = photographerSnap.data()?.paystackSubaccountCode;
@@ -229,6 +253,11 @@ export const initiateBookingPayment = onCall(
     const email = readerSnap.data()?.email || `${readerId}@readers.pns.app`; // Paystack requires an email
     const formattedPhone = formatKenyanPhone(phone);
 
+    // The reader pays the agreed booking amount PLUS Paystack's transaction
+    // fee, so the full agreed amount is what actually lands for the
+    // platform/photographer split after Paystack takes its cut off the top.
+    const totalToCharge = grossUpForPaystackFee(booking.amount);
+
     // BOOK_ prefix lets the shared webhook's determineChargeType route this
     // event by reference alone if metadata ever comes back stripped.
     const reference = `BOOK_${bookingId}_${Date.now()}`;
@@ -239,12 +268,12 @@ export const initiateBookingPayment = onCall(
         method: 'POST',
         body: JSON.stringify({
           email,
-          amount: Math.round(booking.amount * 100), // KES → cents
+          amount: Math.round(totalToCharge * 100), // KES → cents
           currency: 'KES',
           mobile_money: { phone: formattedPhone, provider: 'mpesa' },
           subaccount: subaccountCode,
           reference,
-          metadata: { chargeType: 'booking_payment', bookingId },
+          metadata: { chargeType: 'booking_payment', bookingId, baseAmount: booking.amount, totalCharged: totalToCharge },
         }),
       },
       secretKey
@@ -256,6 +285,6 @@ export const initiateBookingPayment = onCall(
       updatedAt: FieldValue.serverTimestamp(),
     });
 
-    return { reference: result.data.reference, displayText: result.data.display_text ?? null };
+    return { reference: result.data.reference, displayText: result.data.display_text ?? null, totalCharged: totalToCharge };
   }
 );

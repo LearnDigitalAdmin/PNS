@@ -5,7 +5,7 @@ import { usePhotographerAuth } from '../context/PhotographerAuthContext';
 const PHONE_RECAPTCHA_ID = 'phone-recaptcha-container'; // matches the div PhotographerAuthProvider renders
 
 export default function PhotographerLogin() {
-  const { signInWithGoogle, requestPhoneCode, confirmPhoneCode, step, authError } =
+  const { signInWithGoogle, requestPhoneCode, confirmPhoneCode, step, authError, crossAccountConflict } =
     usePhotographerAuth();
 
   const [mode, setMode] = useState<'choose' | 'phone-entry' | 'phone-otp'>('choose');
@@ -98,7 +98,17 @@ export default function PhotographerLogin() {
           </div>
         )}
 
-        {authError && <p className="text-sm text-red-600 text-center">{authError}</p>}
+        {authError && (
+          <p className="text-sm text-red-600 text-center">
+            {authError}
+            {crossAccountConflict && (
+              <>
+                {' '}
+                <Link to="/account" className="underline">Go to My Account →</Link>
+              </>
+            )}
+          </p>
+        )}
 
         <p className="text-center text-xs text-gray-500">
           <Link to="/" style={{ color: 'rgba(201,168,76,.75)' }}>

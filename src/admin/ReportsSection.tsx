@@ -1,13 +1,57 @@
 import { useEffect, useState } from 'react';
-import { collection, deleteDoc, doc, onSnapshot, orderBy, query, updateDoc, where } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, onSnapshot, orderBy, query, updateDoc, where } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAdminData } from './context/AdminDataContext';
+
+// Reports filed before imageUrl started being captured on the report doc
+// itself fall back to a live lookup of the gallery image, so old reports
+// still render a thumbnail rather than just going blank.
+function ReportThumbnail({ r }: { r: ReportRow }) {
+  const [fallbackUrl, setFallbackUrl] = useState<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    if (r.imageUrl || r.targetType !== 'galleryImage') return;
+    let cancelled = false;
+    getDoc(doc(db, 'photographers', r.photographerId, 'gallery', r.targetId))
+      .then((snap) => {
+        if (!cancelled) setFallbackUrl(snap.exists() ? (snap.data().imageUrl ?? null) : null);
+      })
+      .catch(() => {
+        if (!cancelled) setFallbackUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [r.imageUrl, r.targetType, r.photographerId, r.targetId]);
+
+  if (r.targetType !== 'galleryImage' && !r.imageUrl) return null;
+
+  const src = r.imageUrl ?? fallbackUrl;
+  if (src === undefined) {
+    return <div style={{ width: 72, height: 72, borderRadius: 6, background: '#f3f3f3', flexShrink: 0 }} />;
+  }
+  if (!src) {
+    return (
+      <div
+        style={{ width: 72, height: 72, borderRadius: 6, background: '#f3f3f3', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      >
+        <span style={{ fontSize: '.55rem', color: 'var(--warm-gray)', textAlign: 'center', padding: 4 }}>Image no longer available</span>
+      </div>
+    );
+  }
+  return (
+    <a href={src} target="_blank" rel="noreferrer" style={{ flexShrink: 0 }}>
+      <img src={src} alt="Reported content" style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 6 }} />
+    </a>
+  );
+}
 
 interface ReportRow {
   id: string;
   targetType: 'photographer' | 'galleryImage';
   targetId: string;
   photographerId: string;
+  imageUrl?: string | null;
   reason: string;
   status: 'open' | 'reviewed' | 'actioned';
   createdAt: any;
@@ -65,13 +109,16 @@ export default function ReportsSection() {
       <div className="space-y-2">
         {reports.map((r) => (
           <div key={r.id} className="p-3" style={{ border: '1px solid var(--line)', borderRadius: 8 }}>
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <div>
-                <p style={{ fontSize: '.8rem', fontWeight: 600 }}>
-                  {r.targetType === 'photographer' ? 'Profile report' : 'Photo report'}
-                </p>
-                <p style={{ fontSize: '.72rem', color: 'var(--warm-gray)' }}>{r.reason}</p>
-                <p style={{ fontSize: '.65rem', color: 'var(--warm-gray)' }}>Photographer ID: {r.photographerId}</p>
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-3">
+                <ReportThumbnail r={r} />
+                <div>
+                  <p style={{ fontSize: '.8rem', fontWeight: 600 }}>
+                    {r.targetType === 'photographer' ? 'Profile report' : 'Photo report'}
+                  </p>
+                  <p style={{ fontSize: '.72rem', color: 'var(--warm-gray)' }}>{r.reason}</p>
+                  <p style={{ fontSize: '.65rem', color: 'var(--warm-gray)' }}>Photographer ID: {r.photographerId}</p>
+                </div>
               </div>
               {r.status === 'open' && (
                 <div className="space-x-2 whitespace-nowrap">

@@ -1,6 +1,6 @@
 import { useSite, TOTAL_PAGES } from '../context/SiteContext';
 
-const PAGE_TITLES = ['Hero', 'Stories', 'Voting', 'Cogvana', 'Services', 'Partners', 'Sponsored', 'Shop', 'Book'];
+const PAGE_TITLES = ['Hero', 'Stories', 'Voting', 'Directory', 'Services', 'Partners', 'Sponsored', 'Shop', 'Book'];
 
 export default function PageNavUI() {
   const { currentPage, goToPage, swipeHintVisible } = useSite();

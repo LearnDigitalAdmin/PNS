@@ -37,6 +37,14 @@ interface PhotographerAuthValue {
   authLoading: boolean;
   step: AuthStep;
   authError: string | null;
+  // True when the Google/phone identity that just signed in already has a
+  // *reader* profile under this uid. Lets the login screen show a "use
+  // My Account instead" link rather than a bare error.
+  crossAccountConflict: boolean;
+  // True once the photographer-profile listener has resolved at least once
+  // (either way) for the current uid — lets the gate tell "still fetching"
+  // apart from "signed in, but genuinely no photographer doc".
+  profileLoading: boolean;
   // Google
   signInWithGoogle: () => Promise<void>;
   // Phone — two-step: request code, then confirm it
@@ -55,6 +63,8 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
   const [profile, setProfile] = useState<PhotographerProfile | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [crossAccountConflict, setCrossAccountConflict] = useState(false);
+  const [profileLoading, setProfileLoading] = useState(false);
   const [step, setStep] = useState<AuthStep>('idle');
 
   const confirmationRef = useRef<ConfirmationResult | null>(null);
@@ -66,6 +76,17 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
       const ref = doc(db, 'photographers', user.uid);
       const snap = await getDoc(ref);
       if (snap.exists()) return;
+
+      // Guard against account mixup: readers, photographers, and admin all
+      // share one Firebase Auth instance, so a Google/phone identity that
+      // already has a *reader* profile would otherwise silently get a
+      // second, photographer profile provisioned here just from visiting
+      // /partners. Refuse instead of merging the two identities.
+      const readerSnap = await getDoc(doc(db, 'readers', user.uid));
+      if (readerSnap.exists()) {
+        await signOut(auth);
+        throw new Error('CROSS_ACCOUNT_CONFLICT');
+      }
 
       const draft: Omit<PhotographerProfile, 'createdAt'> & { createdAt: unknown } = {
         uid: user.uid,
@@ -80,6 +101,7 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
         services: [],
         status: 'active',
         verified: false,
+        paymentPolicy: 'pay_on_booking',
         likesCount: 0,
         storageUsedBytes: 0,
         storageCapBytes: DEFAULT_PHOTOGRAPHER_STORAGE_CAP_BYTES,
@@ -106,11 +128,14 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
   useEffect(() => {
     if (!currentUser) {
       setProfile(null);
+      setProfileLoading(false);
       return;
     }
+    setProfileLoading(true);
     const ref = doc(db, 'photographers', currentUser.uid);
     const unsub = onSnapshot(ref, (snap) => {
-      if (snap.exists()) setProfile(snap.data() as PhotographerProfile);
+      setProfile(snap.exists() ? (snap.data() as PhotographerProfile) : null);
+      setProfileLoading(false);
     });
     return unsub;
   }, [currentUser]);
@@ -118,6 +143,7 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
   // ---- Google sign-in ----
   const signInWithGoogle = useCallback(async () => {
     setAuthError(null);
+    setCrossAccountConflict(false);
     setStep('loading');
     try {
       const provider = new GoogleAuthProvider();
@@ -126,7 +152,12 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
       setStep('authenticated');
     } catch (err: any) {
       setStep('idle');
-      setAuthError(err.message ?? 'Google sign-in failed. Please try again.');
+      if (err.message === 'CROSS_ACCOUNT_CONFLICT') {
+        setCrossAccountConflict(true);
+        setAuthError('This Google account is already registered as a reader. Use My Account to sign in instead.');
+      } else {
+        setAuthError(err.message ?? 'Google sign-in failed. Please try again.');
+      }
     }
   }, [ensurePhotographerDoc]);
 
@@ -175,11 +206,17 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
         setStep('authenticated');
       } catch (err: any) {
         setStep('awaiting-otp');
-        setAuthError(
-          err.code === 'auth/invalid-verification-code'
-            ? 'That code is incorrect. Please try again.'
-            : err.message ?? 'Verification failed. Please try again.'
-        );
+        if (err.message === 'CROSS_ACCOUNT_CONFLICT') {
+          setCrossAccountConflict(true);
+          setStep('idle');
+          setAuthError('This phone number is already registered as a reader. Use My Account to sign in instead.');
+        } else {
+          setAuthError(
+            err.code === 'auth/invalid-verification-code'
+              ? 'That code is incorrect. Please try again.'
+              : err.message ?? 'Verification failed. Please try again.'
+          );
+        }
       }
     },
     [ensurePhotographerDoc]
@@ -190,6 +227,7 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
     await signOut(auth);
     confirmationRef.current = null;
     setStep('idle');
+    setCrossAccountConflict(false);
   }, []);
 
   const needsProfileCompletion = !!currentUser && !!profile && !profile.profileComplete;
@@ -200,6 +238,8 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
     authLoading,
     step,
     authError,
+    crossAccountConflict,
+    profileLoading,
     signInWithGoogle,
     requestPhoneCode,
     confirmPhoneCode,

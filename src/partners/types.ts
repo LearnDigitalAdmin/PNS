@@ -28,6 +28,14 @@ export interface PhotographerService {
   priceFrom: number;
 }
 
+// How a photographer collects payment for a booking. 'pay_later' is
+// reserved for a future phase (photographer gets paid outside the app after
+// the shoot) and is intentionally not selectable yet — see Settings tab.
+// Every photographer is 'pay_on_booking' for now: once they accept a
+// request, the reader is prompted to pay the fixed service price by M-Pesa
+// before the booking is confirmed.
+export type PaymentPolicy = 'pay_on_booking' | 'pay_later';
+
 export interface PhotographerProfile {
   uid: string; // == Firestore doc id under /photographers
   authProvider: 'google' | 'phone';
@@ -42,6 +50,7 @@ export interface PhotographerProfile {
   coverImageUrl?: string;
   status: 'active' | 'suspended';
   verified: boolean; // admin-granted trust badge — never a gate to publishing
+  paymentPolicy: PaymentPolicy;
   likesCount: number;
   storageUsedBytes: number;
   storageCapBytes: number;

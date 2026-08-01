@@ -180,8 +180,10 @@ service cloud.firestore {
     // happen only via initiateBookingPayment / paystackWebhook (Admin SDK),
     // never through a client write — see functions/src/paystack.ts. The
     // client-writable transitions here are just the human parts: a reader
-    // requesting/cancelling, a photographer accepting/declining/setting the
-    // amount.
+    // requesting/cancelling, a photographer accepting/declining. The amount
+    // is fixed by the photographer's own priced service at request time and
+    // is never editable afterwards by either party — see MIN_BOOKING_FEE_KES
+    // in src/bookings/types.ts (mirrored here).
     match /bookings/{bookingId} {
       allow read: if isAdmin()
                   || (isSignedIn() && (
@@ -191,14 +193,18 @@ service cloud.firestore {
 
       allow create: if isSignedIn()
                     && request.resource.data.readerId == request.auth.uid
-                    && request.resource.data.status == 'requested';
+                    && request.resource.data.status == 'requested'
+                    && request.resource.data.amount is number
+                    && request.resource.data.amount >= 100;
 
       // Reader may only cancel their own still-pending request.
       // Photographer may decline any still-requested booking freely, but
       // may only ACCEPT one if their own payout account is connected —
       // checked here server-side (not just warned about in the UI) so a
       // client can't accept a booking it has no way to ever get paid out
-      // for, leaving a reader stuck mid-flow.
+      // for, leaving a reader stuck mid-flow. Accepting may not change the
+      // amount — it was fixed by the reader's chosen service at request
+      // time, not something either side can edit at accept time.
       allow update: if isAdmin()
                     || (
                       isSignedIn() && request.auth.uid == resource.data.readerId &&
@@ -214,6 +220,7 @@ service cloud.firestore {
                       isSignedIn() && request.auth.uid == resource.data.photographerId &&
                       resource.data.status == 'requested' &&
                       request.resource.data.status == 'accepted' &&
+                      request.resource.data.amount == resource.data.amount &&
                       get(/databases/$(database)/documents/photographers/$(request.auth.uid)).data.payoutSetupComplete == true
                     );
 

@@ -4,10 +4,11 @@ import { httpsCallable } from 'firebase/functions';
 import { db, functions } from '../../lib/firebase';
 import { useReaderAuth } from '../context/ReaderAuthContext';
 import type { Booking, BookingStatus } from '../../bookings/types';
+import { grossUpForPaystackFee } from '../../bookings/types';
 
 const initiatePaymentFn = httpsCallable<
   { bookingId: string; phone: string },
-  { reference: string; displayText: string | null }
+  { reference: string; displayText: string | null; totalCharged?: number }
 >(functions, 'initiateBookingPayment');
 
 const STATUS_LABEL: Record<BookingStatus, string> = {
@@ -25,6 +26,8 @@ function PayBox({ booking }: { booking: Booking }) {
   const [phone, setPhone] = useState(booking.readerPhone || '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const total = grossUpForPaystackFee(booking.amount);
+  const fee = total - booking.amount;
 
   const pay = async () => {
     setError(null);
@@ -43,17 +46,22 @@ function PayBox({ booking }: { booking: Booking }) {
   };
 
   return (
-    <div className="flex items-center gap-2 pt-1">
-      <input
-        placeholder="+2547XXXXXXXX"
-        value={phone}
-        onChange={(e) => setPhone(e.target.value)}
-        className="border rounded px-2 py-1.5 text-sm w-40"
-      />
-      <button onClick={pay} disabled={busy} className="bg-black text-white text-xs rounded px-3 py-1.5 disabled:opacity-50">
-        {busy ? 'Sending prompt…' : `Pay KSh ${booking.amount.toLocaleString()}`}
-      </button>
-      {error && <span className="text-xs text-red-600">{error}</span>}
+    <div className="space-y-1 pt-1">
+      <p className="text-[.68rem] text-gray-500">
+        KSh {booking.amount.toLocaleString()} + KSh {fee.toLocaleString()} processing fee = KSh {total.toLocaleString()}
+      </p>
+      <div className="flex items-center gap-2">
+        <input
+          placeholder="+2547XXXXXXXX"
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          className="border rounded px-2 py-1.5 text-sm w-40"
+        />
+        <button onClick={pay} disabled={busy} className="bg-black text-white text-xs rounded px-3 py-1.5 disabled:opacity-50">
+          {busy ? 'Sending prompt…' : `Pay KSh ${total.toLocaleString()}`}
+        </button>
+        {error && <span className="text-xs text-red-600">{error}</span>}
+      </div>
     </div>
   );
 }
@@ -66,7 +74,14 @@ function BookingRow({ booking }: { booking: Booking }) {
         <span className="text-xs text-gray-500">{STATUS_LABEL[booking.status]}</span>
       </div>
       <p className="text-xs text-gray-500">{booking.serviceName} · {booking.proposedDate}</p>
-      {booking.amount > 0 && <p className="text-xs text-gray-600">Amount: KSh {booking.amount.toLocaleString()}</p>}
+      {booking.amount > 0 && (
+        <p className="text-xs text-gray-600">
+          Price: KSh {booking.amount.toLocaleString()}
+          {(booking.status === 'accepted' || booking.status === 'payment_failed') && (
+            <> (KSh {grossUpForPaystackFee(booking.amount).toLocaleString()} incl. processing fee)</>
+          )}
+        </p>
+      )}
       {(booking.status === 'accepted' || booking.status === 'payment_failed') && <PayBox booking={booking} />}
     </div>
   );
@@ -95,7 +110,7 @@ export default function BookingsSection() {
       ) : bookings.length === 0 ? (
         <div className="border rounded-lg p-8 text-center">
           <p className="text-sm text-gray-500">
-            No bookings yet — request one from a photographer's portfolio in the Cogvana section.
+            No bookings yet — request one from a photographer's portfolio in the Directory section.
           </p>
         </div>
       ) : (

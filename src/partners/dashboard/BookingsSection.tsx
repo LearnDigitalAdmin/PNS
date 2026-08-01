@@ -28,18 +28,14 @@ const STATUS_COLOR: Record<BookingStatus, string> = {
 };
 
 function BookingRow({ booking, payoutReady }: { booking: Booking; payoutReady: boolean }) {
-  const [amount, setAmount] = useState(booking.amount ? String(booking.amount) : '');
   const [busy, setBusy] = useState(false);
 
   const accept = async () => {
-    if (!payoutReady) return; // belt-and-suspenders — button is already disabled in this case
-    const amt = Number(amount);
-    if (!amt || amt <= 0) return;
+    if (!payoutReady || !booking.amount || booking.amount <= 0) return; // belt-and-suspenders — button is already disabled in this case
     setBusy(true);
     try {
       await updateDoc(doc(db, 'bookings', booking.id), {
         status: 'accepted',
-        amount: amt,
         updatedAt: serverTimestamp(),
       });
     } finally {
@@ -70,21 +66,18 @@ function BookingRow({ booking, payoutReady }: { booking: Booking; payoutReady: b
 
       {booking.notes && <p className="text-xs text-gray-600">"{booking.notes}"</p>}
 
+      {booking.amount > 0 && (
+        <p className="text-xs text-gray-500">
+          {booking.status === 'requested' ? 'Fixed price' : 'Agreed amount'}: KSh {booking.amount.toLocaleString()}
+        </p>
+      )}
+
       {booking.status === 'requested' && (
         <div className="space-y-1.5 pt-1">
           <div className="flex items-center gap-2">
-            <span className="text-xs text-gray-500">KSh</span>
-            <input
-              type="number"
-              placeholder="Amount"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              disabled={!payoutReady}
-              className="border rounded px-2 py-1 text-sm w-28 disabled:opacity-50"
-            />
             <button
               onClick={accept}
-              disabled={busy || !amount || !payoutReady}
+              disabled={busy || !payoutReady}
               title={!payoutReady ? 'Set up payouts in Settings first' : undefined}
               className="bg-black text-white text-xs rounded px-3 py-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
             >
@@ -100,10 +93,6 @@ function BookingRow({ booking, payoutReady }: { booking: Booking; payoutReady: b
             </p>
           )}
         </div>
-      )}
-
-      {booking.amount > 0 && booking.status !== 'requested' && (
-        <p className="text-xs text-gray-500">Agreed amount: KSh {booking.amount.toLocaleString()}</p>
       )}
     </div>
   );

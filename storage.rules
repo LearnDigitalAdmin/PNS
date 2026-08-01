@@ -93,6 +93,18 @@ service firebase.storage {
       allow delete: if isPhotographerOwner(photographerId) || isAdmin();
     }
 
+    // ── Photographer cover photo / logo (profile identification image) ────
+    // Small, publicly-displayed image shown in the directory and on the
+    // photographer's own portfolio header — unlike gallery portfolio shots,
+    // this doesn't go through the watermarking pipeline, so the owner can
+    // write it directly. Admin can delete it unilaterally (terms
+    // violations) without needing the photographer's cooperation.
+    match /photographers/{photographerId}/cover/{allPaths=**} {
+      allow read: if true;
+      allow write: if (isPhotographerOwner(photographerId) && isValidImageUpload()) || isAdmin();
+      allow delete: if isPhotographerOwner(photographerId) || isAdmin();
+    }
+
     // ── Photographer shoot-session uploads (private, delivery matching) ───
     // Never publicly readable — raw camera dumps awaiting client matching,
     // not portfolio content. No watermarking applied; full quality is the

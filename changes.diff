@@ -1,0 +1,1702 @@
+diff --git a/firestore.rules b/firestore.rules
+index 2081a75..ce4cdfa 100644
+--- a/firestore.rules
++++ b/firestore.rules
+@@ -180,8 +180,10 @@ service cloud.firestore {
+     // happen only via initiateBookingPayment / paystackWebhook (Admin SDK),
+     // never through a client write — see functions/src/paystack.ts. The
+     // client-writable transitions here are just the human parts: a reader
+-    // requesting/cancelling, a photographer accepting/declining/setting the
+-    // amount.
++    // requesting/cancelling, a photographer accepting/declining. The amount
++    // is fixed by the photographer's own priced service at request time and
++    // is never editable afterwards by either party — see MIN_BOOKING_FEE_KES
++    // in src/bookings/types.ts (mirrored here).
+     match /bookings/{bookingId} {
+       allow read: if isAdmin()
+                   || (isSignedIn() && (
+@@ -191,14 +193,18 @@ service cloud.firestore {
+ 
+       allow create: if isSignedIn()
+                     && request.resource.data.readerId == request.auth.uid
+-                    && request.resource.data.status == 'requested';
++                    && request.resource.data.status == 'requested'
++                    && request.resource.data.amount is number
++                    && request.resource.data.amount >= 100;
+ 
+       // Reader may only cancel their own still-pending request.
+       // Photographer may decline any still-requested booking freely, but
+       // may only ACCEPT one if their own payout account is connected —
+       // checked here server-side (not just warned about in the UI) so a
+       // client can't accept a booking it has no way to ever get paid out
+-      // for, leaving a reader stuck mid-flow.
++      // for, leaving a reader stuck mid-flow. Accepting may not change the
++      // amount — it was fixed by the reader's chosen service at request
++      // time, not something either side can edit at accept time.
+       allow update: if isAdmin()
+                     || (
+                       isSignedIn() && request.auth.uid == resource.data.readerId &&
+@@ -214,6 +220,7 @@ service cloud.firestore {
+                       isSignedIn() && request.auth.uid == resource.data.photographerId &&
+                       resource.data.status == 'requested' &&
+                       request.resource.data.status == 'accepted' &&
++                      request.resource.data.amount == resource.data.amount &&
+                       get(/databases/$(database)/documents/photographers/$(request.auth.uid)).data.payoutSetupComplete == true
+                     );
+ 
+diff --git a/functions/src/paystack.ts b/functions/src/paystack.ts
+index 0dca552..e0ae4dc 100644
+--- a/functions/src/paystack.ts
++++ b/functions/src/paystack.ts
+@@ -16,6 +16,27 @@ const PAYSTACK_API = 'https://api.paystack.co';
+ // Change all three together if this changes.
+ const PLATFORM_FEE_PERCENT = 10;
+ 
++// Smallest amount a booking can be for. Mirrored in src/bookings/types.ts —
++// also enforced in firestore.rules on booking creation, so this is really
++// just a second line of defense for the amount actually charged.
++const MIN_BOOKING_FEE_KES = 100;
++
++// Paystack's transaction fee, passed through to the customer rather than
++// absorbed by the platform or the photographer. Mirrored in
++// src/bookings/types.ts (which only uses it to *display* the total before
++// the charge is created — this copy is the actual source of truth for what
++// gets charged).
++const PAYSTACK_FEE_PERCENT = 2.9;
++
++// Grosses up the agreed booking amount so that, after Paystack deducts its
++// percentage fee from the total charged, the full agreed amount remains for
++// the platform/photographer split — see the subaccount's percentage_charge
++// in createPhotographerSubaccount below. Rounded up since M-Pesa charges
++// don't take fractional shillings.
++function grossUpForPaystackFee(baseAmountKes: number): number {
++  return Math.ceil(baseAmountKes / (1 - PAYSTACK_FEE_PERCENT / 100));
++}
++
+ // NOTE: there is deliberately no Paystack webhook exported from this file.
+ // PNS deploys into the same Firebase project as the MyRegister functions,
+ // and a Paystack account only has one webhook URL — so the single
+@@ -217,6 +238,9 @@ export const initiateBookingPayment = onCall(
+     if (!booking.amount || booking.amount <= 0) {
+       throw new HttpsError('failed-precondition', 'No amount has been set for this booking yet.');
+     }
++    if (booking.amount < MIN_BOOKING_FEE_KES) {
++      throw new HttpsError('failed-precondition', `Booking amount is below the KSh ${MIN_BOOKING_FEE_KES} minimum.`);
++    }
+ 
+     const photographerSnap = await db.doc(`photographers/${booking.photographerId}`).get();
+     const subaccountCode = photographerSnap.data()?.paystackSubaccountCode;
+@@ -229,6 +253,11 @@ export const initiateBookingPayment = onCall(
+     const email = readerSnap.data()?.email || `${readerId}@readers.pns.app`; // Paystack requires an email
+     const formattedPhone = formatKenyanPhone(phone);
+ 
++    // The reader pays the agreed booking amount PLUS Paystack's transaction
++    // fee, so the full agreed amount is what actually lands for the
++    // platform/photographer split after Paystack takes its cut off the top.
++    const totalToCharge = grossUpForPaystackFee(booking.amount);
++
+     // BOOK_ prefix lets the shared webhook's determineChargeType route this
+     // event by reference alone if metadata ever comes back stripped.
+     const reference = `BOOK_${bookingId}_${Date.now()}`;
+@@ -239,12 +268,12 @@ export const initiateBookingPayment = onCall(
+         method: 'POST',
+         body: JSON.stringify({
+           email,
+-          amount: Math.round(booking.amount * 100), // KES → cents
++          amount: Math.round(totalToCharge * 100), // KES → cents
+           currency: 'KES',
+           mobile_money: { phone: formattedPhone, provider: 'mpesa' },
+           subaccount: subaccountCode,
+           reference,
+-          metadata: { chargeType: 'booking_payment', bookingId },
++          metadata: { chargeType: 'booking_payment', bookingId, baseAmount: booking.amount, totalCharged: totalToCharge },
+         }),
+       },
+       secretKey
+@@ -256,6 +285,6 @@ export const initiateBookingPayment = onCall(
+       updatedAt: FieldValue.serverTimestamp(),
+     });
+ 
+-    return { reference: result.data.reference, displayText: result.data.display_text ?? null };
++    return { reference: result.data.reference, displayText: result.data.display_text ?? null, totalCharged: totalToCharge };
+   }
+ );
+diff --git a/src/admin/PhotographersSection.tsx b/src/admin/PhotographersSection.tsx
+index da4a3d5..5139b8b 100644
+--- a/src/admin/PhotographersSection.tsx
++++ b/src/admin/PhotographersSection.tsx
+@@ -1,6 +1,7 @@
+ import { useEffect, useState } from 'react';
+ import { collection, doc, onSnapshot, orderBy, query, updateDoc } from 'firebase/firestore';
+-import { db } from '../lib/firebase';
++import { ref, deleteObject } from 'firebase/storage';
++import { db, storage } from '../lib/firebase';
+ import { useAdminData } from './context/AdminDataContext';
+ 
+ interface Row {
+@@ -14,6 +15,7 @@ interface Row {
+   verified: boolean;
+   storageUsedBytes: number;
+   storageCapBytes: number;
++  coverImageUrl?: string;
+ }
+ 
+ function fmtBytes(b: number) {
+@@ -43,6 +45,20 @@ export default function PhotographersSection() {
+     showToast(row.verified ? 'Verified badge removed' : 'Photographer verified', 'success');
+   };
+ 
++  const removeCoverPhoto = (row: Row) => {
++    openConfirm(
++      'Remove this profile photo?',
++      `This clears ${row.businessName || 'this photographer'}'s cover photo/logo from the directory and their portfolio. They can upload a new one at any time.`,
++      async () => {
++        await updateDoc(doc(db, 'photographers', row.id), { coverImageUrl: '' });
++        for (const ext of ['jpg', 'png']) {
++          deleteObject(ref(storage, `photographers/${row.id}/cover/cover.${ext}`)).catch(() => {});
++        }
++        showToast('Profile photo removed', 'danger');
++      }
++    );
++  };
++
+   const toggleSuspended = (row: Row) => {
+     const next = row.status === 'active' ? 'suspended' : 'active';
+     openConfirm(
+@@ -76,6 +92,7 @@ export default function PhotographersSection() {
+         <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
+           <thead>
+             <tr style={{ background: 'rgba(0,0,0,.03)', textAlign: 'left' }}>
++              <th className="p-3">Photo</th>
+               <th className="p-3">Business</th>
+               <th className="p-3">Location</th>
+               <th className="p-3">Categories</th>
+@@ -88,6 +105,20 @@ export default function PhotographersSection() {
+           <tbody>
+             {filtered.map((r) => (
+               <tr key={r.id} style={{ borderTop: '1px solid var(--line)' }}>
++                <td className="p-3">
++                  <div
++                    style={{
++                      width: 36, height: 36, borderRadius: '50%', overflow: 'hidden', flexShrink: 0,
++                      background: 'rgba(0,0,0,.06)', display: 'flex', alignItems: 'center', justifyContent: 'center',
++                    }}
++                  >
++                    {r.coverImageUrl ? (
++                      <img src={r.coverImageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
++                    ) : (
++                      <span style={{ fontSize: '.7rem', color: 'var(--warm-gray)' }}>—</span>
++                    )}
++                  </div>
++                </td>
+                 <td className="p-3">
+                   <p style={{ fontWeight: 600 }}>{r.businessName || '(unnamed)'}</p>
+                   <p style={{ fontSize: '.72rem', color: 'var(--warm-gray)' }}>{r.ownerName} · {r.phone}</p>
+@@ -105,6 +136,11 @@ export default function PhotographersSection() {
+                   <button onClick={() => toggleVerified(r)} className="btn-outline-admin" style={{ fontSize: '.68rem', padding: '.3rem .6rem' }}>
+                     {r.verified ? 'Unverify' : 'Verify'}
+                   </button>
++                  {r.coverImageUrl && (
++                    <button onClick={() => removeCoverPhoto(r)} className="btn-danger-admin" style={{ fontSize: '.68rem', padding: '.3rem .6rem' }}>
++                      Remove photo
++                    </button>
++                  )}
+                   <button
+                     onClick={() => toggleSuspended(r)}
+                     className={r.status === 'active' ? 'btn-danger-admin' : 'btn-outline-admin'}
+@@ -117,7 +153,7 @@ export default function PhotographersSection() {
+             ))}
+             {filtered.length === 0 && (
+               <tr>
+-                <td className="p-4 text-center" colSpan={7} style={{ color: 'var(--warm-gray)' }}>
++                <td className="p-4 text-center" colSpan={8} style={{ color: 'var(--warm-gray)' }}>
+                   No photographers found.
+                 </td>
+               </tr>
+diff --git a/src/admin/ReportsSection.tsx b/src/admin/ReportsSection.tsx
+index 0092e58..f0d15f0 100644
+--- a/src/admin/ReportsSection.tsx
++++ b/src/admin/ReportsSection.tsx
+@@ -1,13 +1,57 @@
+ import { useEffect, useState } from 'react';
+-import { collection, deleteDoc, doc, onSnapshot, orderBy, query, updateDoc, where } from 'firebase/firestore';
++import { collection, deleteDoc, doc, getDoc, onSnapshot, orderBy, query, updateDoc, where } from 'firebase/firestore';
+ import { db } from '../lib/firebase';
+ import { useAdminData } from './context/AdminDataContext';
+ 
++// Reports filed before imageUrl started being captured on the report doc
++// itself fall back to a live lookup of the gallery image, so old reports
++// still render a thumbnail rather than just going blank.
++function ReportThumbnail({ r }: { r: ReportRow }) {
++  const [fallbackUrl, setFallbackUrl] = useState<string | null | undefined>(undefined);
++
++  useEffect(() => {
++    if (r.imageUrl || r.targetType !== 'galleryImage') return;
++    let cancelled = false;
++    getDoc(doc(db, 'photographers', r.photographerId, 'gallery', r.targetId))
++      .then((snap) => {
++        if (!cancelled) setFallbackUrl(snap.exists() ? (snap.data().imageUrl ?? null) : null);
++      })
++      .catch(() => {
++        if (!cancelled) setFallbackUrl(null);
++      });
++    return () => {
++      cancelled = true;
++    };
++  }, [r.imageUrl, r.targetType, r.photographerId, r.targetId]);
++
++  if (r.targetType !== 'galleryImage' && !r.imageUrl) return null;
++
++  const src = r.imageUrl ?? fallbackUrl;
++  if (src === undefined) {
++    return <div style={{ width: 72, height: 72, borderRadius: 6, background: '#f3f3f3', flexShrink: 0 }} />;
++  }
++  if (!src) {
++    return (
++      <div
++        style={{ width: 72, height: 72, borderRadius: 6, background: '#f3f3f3', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
++      >
++        <span style={{ fontSize: '.55rem', color: 'var(--warm-gray)', textAlign: 'center', padding: 4 }}>Image no longer available</span>
++      </div>
++    );
++  }
++  return (
++    <a href={src} target="_blank" rel="noreferrer" style={{ flexShrink: 0 }}>
++      <img src={src} alt="Reported content" style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 6 }} />
++    </a>
++  );
++}
++
+ interface ReportRow {
+   id: string;
+   targetType: 'photographer' | 'galleryImage';
+   targetId: string;
+   photographerId: string;
++  imageUrl?: string | null;
+   reason: string;
+   status: 'open' | 'reviewed' | 'actioned';
+   createdAt: any;
+@@ -65,13 +109,16 @@ export default function ReportsSection() {
+       <div className="space-y-2">
+         {reports.map((r) => (
+           <div key={r.id} className="p-3" style={{ border: '1px solid var(--line)', borderRadius: 8 }}>
+-            <div className="flex items-center justify-between flex-wrap gap-2">
+-              <div>
+-                <p style={{ fontSize: '.8rem', fontWeight: 600 }}>
+-                  {r.targetType === 'photographer' ? 'Profile report' : 'Photo report'}
+-                </p>
+-                <p style={{ fontSize: '.72rem', color: 'var(--warm-gray)' }}>{r.reason}</p>
+-                <p style={{ fontSize: '.65rem', color: 'var(--warm-gray)' }}>Photographer ID: {r.photographerId}</p>
++            <div className="flex items-center justify-between flex-wrap gap-3">
++              <div className="flex items-center gap-3">
++                <ReportThumbnail r={r} />
++                <div>
++                  <p style={{ fontSize: '.8rem', fontWeight: 600 }}>
++                    {r.targetType === 'photographer' ? 'Profile report' : 'Photo report'}
++                  </p>
++                  <p style={{ fontSize: '.72rem', color: 'var(--warm-gray)' }}>{r.reason}</p>
++                  <p style={{ fontSize: '.65rem', color: 'var(--warm-gray)' }}>Photographer ID: {r.photographerId}</p>
++                </div>
+               </div>
+               {r.status === 'open' && (
+                 <div className="space-x-2 whitespace-nowrap">
+diff --git a/src/bookings/types.ts b/src/bookings/types.ts
+index 3d6b8f8..9c71986 100644
+--- a/src/bookings/types.ts
++++ b/src/bookings/types.ts
+@@ -31,3 +31,23 @@ export interface Booking {
+ // Platform's cut of every paid booking. Mirrored in
+ // functions/src/paystack.ts — change both together if this changes.
+ export const PLATFORM_FEE_PERCENT = 10;
++
++// Smallest amount a photographer may set for a bookable service / a reader
++// may be charged for a booking. Mirrored in functions/src/paystack.ts —
++// change both together if this changes.
++export const MIN_BOOKING_FEE_KES = 100;
++
++// Paystack's transaction fee, passed through to the customer rather than
++// absorbed by the platform or the photographer — the reader pays this on
++// top of the agreed booking amount. Mirrored in functions/src/paystack.ts,
++// which is the actual source of truth for what gets charged; this copy is
++// only used to *display* the total before the charge is created.
++export const PAYSTACK_FEE_PERCENT = 2.9;
++
++// Grosses up a base amount so that, after Paystack deducts its percentage
++// fee from the total charged, the full base amount remains for the
++// platform/photographer split. Rounded up to the nearest whole KES since
++// M-Pesa charges don't take fractional shillings.
++export function grossUpForPaystackFee(baseAmountKes: number): number {
++  return Math.ceil(baseAmountKes / (1 - PAYSTACK_FEE_PERCENT / 100));
++}
+diff --git a/src/partners/PartnersApp.tsx b/src/partners/PartnersApp.tsx
+index 19b71a1..87e8ee1 100644
+--- a/src/partners/PartnersApp.tsx
++++ b/src/partners/PartnersApp.tsx
+@@ -1,17 +1,44 @@
++import { Link } from 'react-router-dom';
+ import { PhotographerAuthProvider, usePhotographerAuth } from './context/PhotographerAuthContext';
+ import PhotographerLogin from './onboarding/PhotographerLogin';
+ import CompleteProfile from './onboarding/CompleteProfile';
+ import PhotographerShell from './dashboard/PhotographerShell';
+ 
++// Shown when this Firebase Auth uid is signed in but has no photographer
++// profile document at all. In normal use that only happens for a reader
++// account visiting /partners via the shared Firebase Auth session (see
++// PhotographerAuthContext's cross-account guard).
++function WrongPortal() {
++  const { logout } = usePhotographerAuth();
++  return (
++    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }} className="px-5">
++      <div className="w-full max-w-sm space-y-4 text-center">
++        <p style={{ fontFamily: "'Playfair Display',serif", fontSize: '1.4rem', fontWeight: 900 }}>P&amp;S</p>
++        <p className="text-sm text-gray-700">
++          This account is signed in as a reader, not a photographer — there's no photographer profile to show here.
++        </p>
++        <Link to="/account" className="inline-block bg-black text-white rounded px-4 py-2 text-sm">
++          Go to My Account
++        </Link>
++        <button onClick={() => logout()} className="block w-full text-sm text-gray-500 mt-2">
++          Sign out and use a different account
++        </button>
++      </div>
++    </div>
++  );
++}
++
+ // Mirrors AdminApp/AdminGate exactly: this component decides which of
+ // Login / CompleteProfile / Shell to render. PhotographerShell owns the
+ // <Outlet/> for the dashboard tab routes, same as AdminShell does for
+ // /admin/* — so those routes only ever mount once the gate reaches Shell.
+ function PartnersGate() {
+-  const { currentUser, authLoading, needsProfileCompletion } = usePhotographerAuth();
++  const { currentUser, authLoading, profileLoading, profile, needsProfileCompletion } = usePhotographerAuth();
+ 
+   if (authLoading) return null;
+   if (!currentUser) return <PhotographerLogin />;
++  if (profileLoading) return null;
++  if (!profile) return <WrongPortal />;
+   if (needsProfileCompletion) return <CompleteProfile />;
+   return <PhotographerShell />;
+ }
+diff --git a/src/partners/context/PhotographerAuthContext.tsx b/src/partners/context/PhotographerAuthContext.tsx
+index d05e5db..434fdef 100644
+--- a/src/partners/context/PhotographerAuthContext.tsx
++++ b/src/partners/context/PhotographerAuthContext.tsx
+@@ -37,6 +37,14 @@ interface PhotographerAuthValue {
+   authLoading: boolean;
+   step: AuthStep;
+   authError: string | null;
++  // True when the Google/phone identity that just signed in already has a
++  // *reader* profile under this uid. Lets the login screen show a "use
++  // My Account instead" link rather than a bare error.
++  crossAccountConflict: boolean;
++  // True once the photographer-profile listener has resolved at least once
++  // (either way) for the current uid — lets the gate tell "still fetching"
++  // apart from "signed in, but genuinely no photographer doc".
++  profileLoading: boolean;
+   // Google
+   signInWithGoogle: () => Promise<void>;
+   // Phone — two-step: request code, then confirm it
+@@ -55,6 +63,8 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
+   const [profile, setProfile] = useState<PhotographerProfile | null>(null);
+   const [authLoading, setAuthLoading] = useState(true);
+   const [authError, setAuthError] = useState<string | null>(null);
++  const [crossAccountConflict, setCrossAccountConflict] = useState(false);
++  const [profileLoading, setProfileLoading] = useState(false);
+   const [step, setStep] = useState<AuthStep>('idle');
+ 
+   const confirmationRef = useRef<ConfirmationResult | null>(null);
+@@ -67,6 +77,17 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
+       const snap = await getDoc(ref);
+       if (snap.exists()) return;
+ 
++      // Guard against account mixup: readers, photographers, and admin all
++      // share one Firebase Auth instance, so a Google/phone identity that
++      // already has a *reader* profile would otherwise silently get a
++      // second, photographer profile provisioned here just from visiting
++      // /partners. Refuse instead of merging the two identities.
++      const readerSnap = await getDoc(doc(db, 'readers', user.uid));
++      if (readerSnap.exists()) {
++        await signOut(auth);
++        throw new Error('CROSS_ACCOUNT_CONFLICT');
++      }
++
+       const draft: Omit<PhotographerProfile, 'createdAt'> & { createdAt: unknown } = {
+         uid: user.uid,
+         authProvider,
+@@ -80,6 +101,7 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
+         services: [],
+         status: 'active',
+         verified: false,
++        paymentPolicy: 'pay_on_booking',
+         likesCount: 0,
+         storageUsedBytes: 0,
+         storageCapBytes: DEFAULT_PHOTOGRAPHER_STORAGE_CAP_BYTES,
+@@ -106,11 +128,14 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
+   useEffect(() => {
+     if (!currentUser) {
+       setProfile(null);
++      setProfileLoading(false);
+       return;
+     }
++    setProfileLoading(true);
+     const ref = doc(db, 'photographers', currentUser.uid);
+     const unsub = onSnapshot(ref, (snap) => {
+-      if (snap.exists()) setProfile(snap.data() as PhotographerProfile);
++      setProfile(snap.exists() ? (snap.data() as PhotographerProfile) : null);
++      setProfileLoading(false);
+     });
+     return unsub;
+   }, [currentUser]);
+@@ -118,6 +143,7 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
+   // ---- Google sign-in ----
+   const signInWithGoogle = useCallback(async () => {
+     setAuthError(null);
++    setCrossAccountConflict(false);
+     setStep('loading');
+     try {
+       const provider = new GoogleAuthProvider();
+@@ -126,7 +152,12 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
+       setStep('authenticated');
+     } catch (err: any) {
+       setStep('idle');
+-      setAuthError(err.message ?? 'Google sign-in failed. Please try again.');
++      if (err.message === 'CROSS_ACCOUNT_CONFLICT') {
++        setCrossAccountConflict(true);
++        setAuthError('This Google account is already registered as a reader. Use My Account to sign in instead.');
++      } else {
++        setAuthError(err.message ?? 'Google sign-in failed. Please try again.');
++      }
+     }
+   }, [ensurePhotographerDoc]);
+ 
+@@ -175,11 +206,17 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
+         setStep('authenticated');
+       } catch (err: any) {
+         setStep('awaiting-otp');
+-        setAuthError(
+-          err.code === 'auth/invalid-verification-code'
+-            ? 'That code is incorrect. Please try again.'
+-            : err.message ?? 'Verification failed. Please try again.'
+-        );
++        if (err.message === 'CROSS_ACCOUNT_CONFLICT') {
++          setCrossAccountConflict(true);
++          setStep('idle');
++          setAuthError('This phone number is already registered as a reader. Use My Account to sign in instead.');
++        } else {
++          setAuthError(
++            err.code === 'auth/invalid-verification-code'
++              ? 'That code is incorrect. Please try again.'
++              : err.message ?? 'Verification failed. Please try again.'
++          );
++        }
+       }
+     },
+     [ensurePhotographerDoc]
+@@ -190,6 +227,7 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
+     await signOut(auth);
+     confirmationRef.current = null;
+     setStep('idle');
++    setCrossAccountConflict(false);
+   }, []);
+ 
+   const needsProfileCompletion = !!currentUser && !!profile && !profile.profileComplete;
+@@ -200,6 +238,8 @@ export function PhotographerAuthProvider({ children }: { children: React.ReactNo
+     authLoading,
+     step,
+     authError,
++    crossAccountConflict,
++    profileLoading,
+     signInWithGoogle,
+     requestPhoneCode,
+     confirmPhoneCode,
+diff --git a/src/partners/dashboard/BookingsSection.tsx b/src/partners/dashboard/BookingsSection.tsx
+index d6833e8..a46365a 100644
+--- a/src/partners/dashboard/BookingsSection.tsx
++++ b/src/partners/dashboard/BookingsSection.tsx
+@@ -28,18 +28,14 @@ const STATUS_COLOR: Record<BookingStatus, string> = {
+ };
+ 
+ function BookingRow({ booking, payoutReady }: { booking: Booking; payoutReady: boolean }) {
+-  const [amount, setAmount] = useState(booking.amount ? String(booking.amount) : '');
+   const [busy, setBusy] = useState(false);
+ 
+   const accept = async () => {
+-    if (!payoutReady) return; // belt-and-suspenders — button is already disabled in this case
+-    const amt = Number(amount);
+-    if (!amt || amt <= 0) return;
++    if (!payoutReady || !booking.amount || booking.amount <= 0) return; // belt-and-suspenders — button is already disabled in this case
+     setBusy(true);
+     try {
+       await updateDoc(doc(db, 'bookings', booking.id), {
+         status: 'accepted',
+-        amount: amt,
+         updatedAt: serverTimestamp(),
+       });
+     } finally {
+@@ -70,21 +66,18 @@ function BookingRow({ booking, payoutReady }: { booking: Booking; payoutReady: b
+ 
+       {booking.notes && <p className="text-xs text-gray-600">"{booking.notes}"</p>}
+ 
++      {booking.amount > 0 && (
++        <p className="text-xs text-gray-500">
++          {booking.status === 'requested' ? 'Fixed price' : 'Agreed amount'}: KSh {booking.amount.toLocaleString()}
++        </p>
++      )}
++
+       {booking.status === 'requested' && (
+         <div className="space-y-1.5 pt-1">
+           <div className="flex items-center gap-2">
+-            <span className="text-xs text-gray-500">KSh</span>
+-            <input
+-              type="number"
+-              placeholder="Amount"
+-              value={amount}
+-              onChange={(e) => setAmount(e.target.value)}
+-              disabled={!payoutReady}
+-              className="border rounded px-2 py-1 text-sm w-28 disabled:opacity-50"
+-            />
+             <button
+               onClick={accept}
+-              disabled={busy || !amount || !payoutReady}
++              disabled={busy || !payoutReady}
+               title={!payoutReady ? 'Set up payouts in Settings first' : undefined}
+               className="bg-black text-white text-xs rounded px-3 py-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+             >
+@@ -101,10 +94,6 @@ function BookingRow({ booking, payoutReady }: { booking: Booking; payoutReady: b
+           )}
+         </div>
+       )}
+-
+-      {booking.amount > 0 && booking.status !== 'requested' && (
+-        <p className="text-xs text-gray-500">Agreed amount: KSh {booking.amount.toLocaleString()}</p>
+-      )}
+     </div>
+   );
+ }
+diff --git a/src/partners/dashboard/PhotographerShell.tsx b/src/partners/dashboard/PhotographerShell.tsx
+index a96fd2d..8fef1c2 100644
+--- a/src/partners/dashboard/PhotographerShell.tsx
++++ b/src/partners/dashboard/PhotographerShell.tsx
+@@ -1,4 +1,4 @@
+-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
++import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
+ import { usePhotographerAuth } from '../context/PhotographerAuthContext';
+ 
+ const TABS = [
+@@ -22,12 +22,12 @@ export default function PhotographerShell() {
+   return (
+     <div style={{ display: 'flex', minHeight: '100vh' }}>
+       <aside style={{ width: 220, borderRight: '1px solid #e5e5e5', flexShrink: 0 }} className="hidden md:flex flex-col">
+-        <div className="p-4 border-b" style={{ borderColor: '#e5e5e5' }}>
++        <Link to="/" className="p-4 border-b block hover:bg-gray-50" style={{ borderColor: '#e5e5e5' }}>
+           <p style={{ fontFamily: "'Playfair Display',serif", fontSize: '1.2rem', fontWeight: 900 }}>P&amp;S</p>
+           <p style={{ fontSize: '.55rem', letterSpacing: '.2em', color: 'var(--gold, #c9a84c)', textTransform: 'uppercase' }}>
+             Partner Studio
+           </p>
+-        </div>
++        </Link>
+         <nav className="flex-1 p-2">
+           {TABS.map((tab) => (
+             <NavLink
+@@ -41,15 +41,34 @@ export default function PhotographerShell() {
+             </NavLink>
+           ))}
+         </nav>
+-        <div className="p-3 border-t" style={{ borderColor: '#e5e5e5' }}>
+-          <p className="text-xs text-gray-500 truncate mb-2">{profile?.businessName || 'Unnamed studio'}</p>
++        <div className="p-3 border-t space-y-2" style={{ borderColor: '#e5e5e5' }}>
++          <Link to="/" className="block text-xs text-gray-600 hover:text-black">
++            ← Back to site
++          </Link>
++          <p className="text-xs text-gray-500 truncate">{profile?.businessName || 'Unnamed studio'}</p>
+           <button onClick={handleLogout} className="w-full text-xs text-left text-red-600">
+             Sign out
+           </button>
+         </div>
+       </aside>
+ 
+-      {/* Mobile top nav */}
++      {/* Mobile top bar — the bottom nav below is tab-only, so a fixed top
++          bar is the only place a "back to site" link can live without
++          crowding the tab bar. */}
++      <div
++        className="md:hidden fixed top-0 left-0 right-0 bg-white border-b flex items-center justify-between px-4 py-2 z-40"
++        style={{ borderColor: '#e5e5e5' }}
++      >
++        <Link to="/" className="text-xs text-gray-600 flex items-center gap-1">
++          ← Site
++        </Link>
++        <p style={{ fontFamily: "'Playfair Display',serif", fontSize: '.95rem', fontWeight: 900 }}>P&amp;S</p>
++        <button onClick={handleLogout} className="text-xs text-red-600">
++          Sign out
++        </button>
++      </div>
++
++      {/* Mobile bottom tab nav */}
+       <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t flex justify-around z-40" style={{ borderColor: '#e5e5e5' }}>
+         {TABS.map((tab) => (
+           <NavLink
+@@ -62,7 +81,7 @@ export default function PhotographerShell() {
+         ))}
+       </div>
+ 
+-      <main className="flex-1 pb-16 md:pb-0">
++      <main className="flex-1 pb-16 pt-12 md:pt-0 md:pb-0">
+         <Outlet />
+       </main>
+     </div>
+diff --git a/src/partners/dashboard/ProfileSection.tsx b/src/partners/dashboard/ProfileSection.tsx
+index 0b95b07..4a68811 100644
+--- a/src/partners/dashboard/ProfileSection.tsx
++++ b/src/partners/dashboard/ProfileSection.tsx
+@@ -1,8 +1,98 @@
+-import { useState } from 'react';
++import { useRef, useState } from 'react';
+ import { doc, updateDoc } from 'firebase/firestore';
+-import { db } from '../../lib/firebase';
++import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
++import { db, storage } from '../../lib/firebase';
+ import { usePhotographerAuth } from '../context/PhotographerAuthContext';
+ import { PHOTOGRAPHER_CATEGORIES, type PhotographerCategory, type PhotographerService } from '../types';
++import { MIN_BOOKING_FEE_KES } from '../../bookings/types';
++
++function CoverPhotoUpload() {
++  const { currentUser, profile } = usePhotographerAuth();
++  const fileInputRef = useRef<HTMLInputElement>(null);
++  const [uploading, setUploading] = useState(false);
++  const [error, setError] = useState<string | null>(null);
++
++  if (!currentUser || !profile) return null;
++
++  const handleFile = async (files: FileList | null) => {
++    const file = files?.[0];
++    if (!file) return;
++    setError(null);
++    if (!/^image\/(jpeg|jpg|png)$/.test(file.type)) {
++      setError('Only JPEG/PNG images are supported.');
++      return;
++    }
++    if (file.size > 15 * 1024 * 1024) {
++      setError('Image must be under 15 MB.');
++      return;
++    }
++    setUploading(true);
++    try {
++      const ext = file.type === 'image/png' ? 'png' : 'jpg';
++      const path = `photographers/${currentUser.uid}/cover/cover.${ext}`;
++      await uploadBytes(ref(storage, path), file);
++      const url = await getDownloadURL(ref(storage, path));
++      await updateDoc(doc(db, 'photographers', currentUser.uid), { coverImageUrl: url });
++    } catch (err: any) {
++      setError(err.message ?? 'Could not upload image. Please try again.');
++    } finally {
++      setUploading(false);
++      if (fileInputRef.current) fileInputRef.current.value = '';
++    }
++  };
++
++  const remove = async () => {
++    if (!profile.coverImageUrl) return;
++    setUploading(true);
++    try {
++      await updateDoc(doc(db, 'photographers', currentUser.uid), { coverImageUrl: '' });
++      // Best-effort cleanup — the extension isn't known here, so try both.
++      for (const ext of ['jpg', 'png']) {
++        deleteObject(ref(storage, `photographers/${currentUser.uid}/cover/cover.${ext}`)).catch(() => {});
++      }
++    } finally {
++      setUploading(false);
++    }
++  };
++
++  return (
++    <div className="space-y-2">
++      <label className="text-sm font-medium">Profile photo / logo</label>
++      <p className="text-xs text-gray-500">
++        Shown next to your business name in the directory and on your portfolio so clients can recognize you at a
++        glance.
++      </p>
++      <div className="flex items-center gap-4">
++        <div
++          className="rounded-full bg-gray-100 border overflow-hidden flex items-center justify-center flex-shrink-0"
++          style={{ width: 72, height: 72 }}
++        >
++          {profile.coverImageUrl ? (
++            <img src={profile.coverImageUrl} alt="Cover" className="w-full h-full object-cover" />
++          ) : (
++            <span className="text-xl text-gray-400">{profile.businessName?.[0]?.toUpperCase() ?? '?'}</span>
++          )}
++        </div>
++        <div className="space-y-1.5">
++          <input
++            ref={fileInputRef}
++            type="file"
++            accept="image/jpeg,image/png"
++            onChange={(e) => handleFile(e.target.files)}
++            disabled={uploading}
++            className="text-sm"
++          />
++          {profile.coverImageUrl && (
++            <button onClick={remove} disabled={uploading} className="block text-xs text-red-600 disabled:opacity-50">
++              Remove photo
++            </button>
++          )}
++          {error && <p className="text-xs text-red-600">{error}</p>}
++        </div>
++      </div>
++    </div>
++  );
++}
+ 
+ export default function ProfileSection() {
+   const { currentUser, profile } = usePhotographerAuth();
+@@ -40,6 +130,12 @@ export default function ProfileSection() {
+       setError('Pick at least one category.');
+       return;
+     }
++    const namedServices = services.filter((s) => s.name.trim()).map((s) => ({ ...s, priceFrom: Number(s.priceFrom) || 0 }));
++    const underMinimum = namedServices.find((s) => s.priceFrom > 0 && s.priceFrom < MIN_BOOKING_FEE_KES);
++    if (underMinimum) {
++      setError(`"${underMinimum.name}" is priced below the KSh ${MIN_BOOKING_FEE_KES} minimum booking fee.`);
++      return;
++    }
+     setSaving(true);
+     try {
+       await updateDoc(doc(db, 'photographers', currentUser.uid), {
+@@ -48,7 +144,7 @@ export default function ProfileSection() {
+         county: county.trim(),
+         bio: bio.trim(),
+         categories,
+-        services: services.filter((s) => s.name.trim()).map((s) => ({ ...s, priceFrom: Number(s.priceFrom) || 0 })),
++        services: namedServices,
+       });
+       setSaved(true);
+     } catch (err: any) {
+@@ -62,6 +158,8 @@ export default function ProfileSection() {
+     <div className="p-6 max-w-2xl space-y-5">
+       <h1 className="text-xl font-semibold">Profile</h1>
+ 
++      <CoverPhotoUpload />
++
+       <div className="space-y-1">
+         <label className="text-sm font-medium">Business name</label>
+         <input value={businessName} onChange={(e) => setBusinessName(e.target.value)} className="w-full border rounded px-3 py-2" />
+@@ -114,9 +212,10 @@ export default function ProfileSection() {
+               className="w-full border rounded px-2 py-1 text-sm"
+             />
+             <div className="flex items-center gap-2">
+-              <span className="text-sm text-gray-500">Priced from KSh</span>
++              <span className="text-sm text-gray-500">Price KSh</span>
+               <input
+                 type="number"
++                min={MIN_BOOKING_FEE_KES}
+                 value={s.priceFrom}
+                 onChange={(e) => updateService(idx, { priceFrom: Number(e.target.value) })}
+                 className="w-28 border rounded px-2 py-1 text-sm"
+@@ -127,6 +226,10 @@ export default function ProfileSection() {
+                 </button>
+               )}
+             </div>
++            <p className="text-xs text-gray-400">
++              This is the fixed price clients pay for this service — it can't be changed per-booking. Minimum KSh{' '}
++              {MIN_BOOKING_FEE_KES}.
++            </p>
+           </div>
+         ))}
+         <button onClick={addService} className="text-sm text-blue-600">
+diff --git a/src/partners/dashboard/SettingsSection.tsx b/src/partners/dashboard/SettingsSection.tsx
+index 0093efb..ac2968e 100644
+--- a/src/partners/dashboard/SettingsSection.tsx
++++ b/src/partners/dashboard/SettingsSection.tsx
+@@ -1,8 +1,10 @@
+ import { useState } from 'react';
++import { doc, updateDoc } from 'firebase/firestore';
+ import { usePhotographerAuth } from '../context/PhotographerAuthContext';
+ import { useNavigate } from 'react-router-dom';
+ import { httpsCallable } from 'firebase/functions';
+-import { functions } from '../../lib/firebase';
++import { db, functions } from '../../lib/firebase';
++import type { PaymentPolicy } from '../types';
+ 
+ const createSubaccountFn = httpsCallable<
+   { businessName: string; bankCode: string; accountNumber: string },
+@@ -81,6 +83,61 @@ function PayoutSetup() {
+   );
+ }
+ 
++function PaymentPolicySetting() {
++  const { currentUser, profile } = usePhotographerAuth();
++  const [saving, setSaving] = useState(false);
++  if (!currentUser || !profile) return null;
++
++  const current: PaymentPolicy = profile.paymentPolicy ?? 'pay_on_booking';
++
++  const choose = async (policy: PaymentPolicy) => {
++    if (policy === 'pay_later' || policy === current || saving) return; // pay_later disabled for now
++    setSaving(true);
++    try {
++      await updateDoc(doc(db, 'photographers', currentUser.uid), { paymentPolicy: policy });
++    } finally {
++      setSaving(false);
++    }
++  };
++
++  return (
++    <div className="border rounded-lg p-4 space-y-3">
++      <div>
++        <p className="text-sm font-medium">Payment collection</p>
++        <p className="text-xs text-gray-500 mt-0.5">
++          How clients pay for a booking once you accept it. Prices are fixed per service in your Profile — clients
++          always know the exact amount before they book.
++        </p>
++      </div>
++
++      <button
++        type="button"
++        onClick={() => choose('pay_on_booking')}
++        className={`w-full text-left border rounded-lg p-3 ${current === 'pay_on_booking' ? 'border-black bg-gray-50' : 'border-gray-200'}`}
++      >
++        <p className="text-sm font-medium flex items-center gap-2">
++          Pay on booking (M-Pesa)
++          {current === 'pay_on_booking' && <span className="text-xs text-green-600">✓ Active</span>}
++        </p>
++        <p className="text-xs text-gray-500 mt-0.5">
++          Once you accept a request, the client is prompted to pay the fixed service price by M-Pesa before the
++          booking is confirmed.
++        </p>
++      </button>
++
++      <div className="w-full text-left border rounded-lg p-3 border-gray-200 opacity-50 cursor-not-allowed">
++        <p className="text-sm font-medium flex items-center gap-2">
++          Pay later
++          <span className="text-xs bg-gray-200 text-gray-600 rounded px-1.5 py-0.5">Coming soon</span>
++        </p>
++        <p className="text-xs text-gray-500 mt-0.5">
++          Accept a booking without collecting payment upfront and settle with the client directly. Not available yet.
++        </p>
++      </div>
++    </div>
++  );
++}
++
+ export default function SettingsSection() {
+   const { currentUser, profile, logout } = usePhotographerAuth();
+   const navigate = useNavigate();
+@@ -114,6 +171,7 @@ export default function SettingsSection() {
+         </p>
+       </div>
+ 
++      <PaymentPolicySetting />
+       <PayoutSetup />
+ 
+       {profile.status === 'suspended' && (
+diff --git a/src/partners/onboarding/PhotographerLogin.tsx b/src/partners/onboarding/PhotographerLogin.tsx
+index f13af3f..e2e12af 100644
+--- a/src/partners/onboarding/PhotographerLogin.tsx
++++ b/src/partners/onboarding/PhotographerLogin.tsx
+@@ -5,7 +5,7 @@ import { usePhotographerAuth } from '../context/PhotographerAuthContext';
+ const PHONE_RECAPTCHA_ID = 'phone-recaptcha-container'; // matches the div PhotographerAuthProvider renders
+ 
+ export default function PhotographerLogin() {
+-  const { signInWithGoogle, requestPhoneCode, confirmPhoneCode, step, authError } =
++  const { signInWithGoogle, requestPhoneCode, confirmPhoneCode, step, authError, crossAccountConflict } =
+     usePhotographerAuth();
+ 
+   const [mode, setMode] = useState<'choose' | 'phone-entry' | 'phone-otp'>('choose');
+@@ -98,7 +98,17 @@ export default function PhotographerLogin() {
+           </div>
+         )}
+ 
+-        {authError && <p className="text-sm text-red-600 text-center">{authError}</p>}
++        {authError && (
++          <p className="text-sm text-red-600 text-center">
++            {authError}
++            {crossAccountConflict && (
++              <>
++                {' '}
++                <Link to="/account" className="underline">Go to My Account →</Link>
++              </>
++            )}
++          </p>
++        )}
+ 
+         <p className="text-center text-xs text-gray-500">
+           <Link to="/" style={{ color: 'rgba(201,168,76,.75)' }}>
+diff --git a/src/partners/types.ts b/src/partners/types.ts
+index 12c692a..20a5a1b 100644
+--- a/src/partners/types.ts
++++ b/src/partners/types.ts
+@@ -28,6 +28,14 @@ export interface PhotographerService {
+   priceFrom: number;
+ }
+ 
++// How a photographer collects payment for a booking. 'pay_later' is
++// reserved for a future phase (photographer gets paid outside the app after
++// the shoot) and is intentionally not selectable yet — see Settings tab.
++// Every photographer is 'pay_on_booking' for now: once they accept a
++// request, the reader is prompted to pay the fixed service price by M-Pesa
++// before the booking is confirmed.
++export type PaymentPolicy = 'pay_on_booking' | 'pay_later';
++
+ export interface PhotographerProfile {
+   uid: string; // == Firestore doc id under /photographers
+   authProvider: 'google' | 'phone';
+@@ -42,6 +50,7 @@ export interface PhotographerProfile {
+   coverImageUrl?: string;
+   status: 'active' | 'suspended';
+   verified: boolean; // admin-granted trust badge — never a gate to publishing
++  paymentPolicy: PaymentPolicy;
+   likesCount: number;
+   storageUsedBytes: number;
+   storageCapBytes: number;
+diff --git a/src/readers/ReadersApp.tsx b/src/readers/ReadersApp.tsx
+index 7334132..a56f8f7 100644
+--- a/src/readers/ReadersApp.tsx
++++ b/src/readers/ReadersApp.tsx
+@@ -1,15 +1,44 @@
++import { Link } from 'react-router-dom';
+ import { ReaderAuthProvider, useReaderAuth } from './context/ReaderAuthContext';
+ import ReaderLogin from './onboarding/ReaderLogin';
+ import CompleteReaderProfile from './onboarding/CompleteReaderProfile';
+ import ReaderShell from './dashboard/ReaderShell';
+ 
++// Shown when this Firebase Auth uid is signed in but has no reader profile
++// document at all. In normal use that only happens for a photographer
++// account visiting /account via the shared Firebase Auth session (see
++// ReaderAuthContext's cross-account guard) — a brand-new reader always gets
++// their doc provisioned as part of signInWithGoogle/confirmPhoneCode before
++// they ever reach this gate.
++function WrongPortal() {
++  const { logout } = useReaderAuth();
++  return (
++    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }} className="px-5">
++      <div className="w-full max-w-sm space-y-4 text-center">
++        <p style={{ fontFamily: "'Playfair Display',serif", fontSize: '1.4rem', fontWeight: 900 }}>P&amp;S</p>
++        <p className="text-sm text-gray-700">
++          This account is signed in as a photographer, not a reader — there's no reader profile to show here.
++        </p>
++        <Link to="/partners" className="inline-block bg-black text-white rounded px-4 py-2 text-sm">
++          Go to photographer portal
++        </Link>
++        <button onClick={() => logout()} className="block w-full text-sm text-gray-500 mt-2">
++          Sign out and use a different account
++        </button>
++      </div>
++    </div>
++  );
++}
++
+ // Mirrors PartnersApp/AdminApp exactly. ReaderShell owns the <Outlet/> for
+ // the dashboard tab routes.
+ function ReaderGate() {
+-  const { currentUser, authLoading, needsProfileCompletion } = useReaderAuth();
++  const { currentUser, authLoading, profileLoading, profile, needsProfileCompletion } = useReaderAuth();
+ 
+   if (authLoading) return null;
+   if (!currentUser) return <ReaderLogin />;
++  if (profileLoading) return null;
++  if (!profile) return <WrongPortal />;
+   if (needsProfileCompletion) return <CompleteReaderProfile />;
+   return <ReaderShell />;
+ }
+diff --git a/src/readers/context/ReaderAuthContext.tsx b/src/readers/context/ReaderAuthContext.tsx
+index 04dfed3..2d391f7 100644
+--- a/src/readers/context/ReaderAuthContext.tsx
++++ b/src/readers/context/ReaderAuthContext.tsx
+@@ -34,6 +34,15 @@ interface ReaderAuthValue {
+   authLoading: boolean;
+   step: AuthStep;
+   authError: string | null;
++  // True when the Google/phone identity that just signed in already has a
++  // *photographer* profile under this uid. Lets the login screen show a
++  // "use the photographer portal instead" link rather than a bare error.
++  crossAccountConflict: boolean;
++  // True once the reader-profile listener has resolved at least once (either
++  // way) for the current uid. Lets the gate tell "still fetching the
++  // profile" apart from "signed in, but genuinely no reader doc" (e.g. a
++  // photographer account landing here via the shared Firebase Auth session).
++  profileLoading: boolean;
+   signInWithGoogle: () => Promise<void>;
+   requestPhoneCode: (phoneE164: string, recaptchaContainerId: string) => Promise<void>;
+   confirmPhoneCode: (code: string) => Promise<void>;
+@@ -52,6 +61,8 @@ export function ReaderAuthProvider({ children }: { children: React.ReactNode })
+   const [profile, setProfile] = useState<ReaderProfile | null>(null);
+   const [authLoading, setAuthLoading] = useState(true);
+   const [authError, setAuthError] = useState<string | null>(null);
++  const [crossAccountConflict, setCrossAccountConflict] = useState(false);
++  const [profileLoading, setProfileLoading] = useState(false);
+   const [step, setStep] = useState<AuthStep>('idle');
+ 
+   const confirmationRef = useRef<ConfirmationResult | null>(null);
+@@ -62,6 +73,17 @@ export function ReaderAuthProvider({ children }: { children: React.ReactNode })
+     const snap = await getDoc(ref);
+     if (snap.exists()) return;
+ 
++    // Guard against account mixup: readers, photographers, and admin all
++    // share one Firebase Auth instance (see note below), so a Google/phone
++    // identity that already has a *photographer* profile would otherwise
++    // silently get a second, reader profile provisioned here just from
++    // visiting /account. Refuse instead of merging the two identities.
++    const photographerSnap = await getDoc(doc(db, 'photographers', user.uid));
++    if (photographerSnap.exists()) {
++      await signOut(auth);
++      throw new Error('CROSS_ACCOUNT_CONFLICT');
++    }
++
+     // Referral capture: ?ref=<referring reader's uid> in the URL at the
+     // moment they land on the site. This only matters on first account
+     // creation — read it fresh here rather than threading it through props,
+@@ -98,17 +120,21 @@ export function ReaderAuthProvider({ children }: { children: React.ReactNode })
+   useEffect(() => {
+     if (!currentUser) {
+       setProfile(null);
++      setProfileLoading(false);
+       return;
+     }
++    setProfileLoading(true);
+     const ref = doc(db, 'readers', currentUser.uid);
+     const unsub = onSnapshot(ref, (snap) => {
+-      if (snap.exists()) setProfile(snap.data() as ReaderProfile);
++      setProfile(snap.exists() ? (snap.data() as ReaderProfile) : null);
++      setProfileLoading(false);
+     });
+     return unsub;
+   }, [currentUser]);
+ 
+   const signInWithGoogle = useCallback(async () => {
+     setAuthError(null);
++    setCrossAccountConflict(false);
+     setStep('loading');
+     try {
+       const provider = new GoogleAuthProvider();
+@@ -117,7 +143,12 @@ export function ReaderAuthProvider({ children }: { children: React.ReactNode })
+       setStep('authenticated');
+     } catch (err: any) {
+       setStep('idle');
+-      setAuthError(err.message ?? 'Google sign-in failed. Please try again.');
++      if (err.message === 'CROSS_ACCOUNT_CONFLICT') {
++        setCrossAccountConflict(true);
++        setAuthError('This Google account is already registered as a photographer. Use the photographer portal to sign in instead.');
++      } else {
++        setAuthError(err.message ?? 'Google sign-in failed. Please try again.');
++      }
+     }
+   }, [ensureReaderDoc]);
+ 
+@@ -164,11 +195,17 @@ export function ReaderAuthProvider({ children }: { children: React.ReactNode })
+         setStep('authenticated');
+       } catch (err: any) {
+         setStep('awaiting-otp');
+-        setAuthError(
+-          err.code === 'auth/invalid-verification-code'
+-            ? 'That code is incorrect. Please try again.'
+-            : err.message ?? 'Verification failed. Please try again.'
+-        );
++        if (err.message === 'CROSS_ACCOUNT_CONFLICT') {
++          setCrossAccountConflict(true);
++          setStep('idle');
++          setAuthError('This phone number is already registered as a photographer. Use the photographer portal to sign in instead.');
++        } else {
++          setAuthError(
++            err.code === 'auth/invalid-verification-code'
++              ? 'That code is incorrect. Please try again.'
++              : err.message ?? 'Verification failed. Please try again.'
++          );
++        }
+       }
+     },
+     [ensureReaderDoc]
+@@ -178,6 +215,7 @@ export function ReaderAuthProvider({ children }: { children: React.ReactNode })
+     await signOut(auth);
+     confirmationRef.current = null;
+     setStep('idle');
++    setCrossAccountConflict(false);
+   }, []);
+ 
+   const needsProfileCompletion = !!currentUser && !!profile && !profile.profileComplete;
+@@ -188,6 +226,8 @@ export function ReaderAuthProvider({ children }: { children: React.ReactNode })
+     authLoading,
+     step,
+     authError,
++    crossAccountConflict,
++    profileLoading,
+     signInWithGoogle,
+     requestPhoneCode,
+     confirmPhoneCode,
+diff --git a/src/readers/dashboard/BookingsSection.tsx b/src/readers/dashboard/BookingsSection.tsx
+index 4961019..e1b8e0d 100644
+--- a/src/readers/dashboard/BookingsSection.tsx
++++ b/src/readers/dashboard/BookingsSection.tsx
+@@ -4,10 +4,11 @@ import { httpsCallable } from 'firebase/functions';
+ import { db, functions } from '../../lib/firebase';
+ import { useReaderAuth } from '../context/ReaderAuthContext';
+ import type { Booking, BookingStatus } from '../../bookings/types';
++import { grossUpForPaystackFee } from '../../bookings/types';
+ 
+ const initiatePaymentFn = httpsCallable<
+   { bookingId: string; phone: string },
+-  { reference: string; displayText: string | null }
++  { reference: string; displayText: string | null; totalCharged?: number }
+ >(functions, 'initiateBookingPayment');
+ 
+ const STATUS_LABEL: Record<BookingStatus, string> = {
+@@ -25,6 +26,8 @@ function PayBox({ booking }: { booking: Booking }) {
+   const [phone, setPhone] = useState(booking.readerPhone || '');
+   const [busy, setBusy] = useState(false);
+   const [error, setError] = useState<string | null>(null);
++  const total = grossUpForPaystackFee(booking.amount);
++  const fee = total - booking.amount;
+ 
+   const pay = async () => {
+     setError(null);
+@@ -43,17 +46,22 @@ function PayBox({ booking }: { booking: Booking }) {
+   };
+ 
+   return (
+-    <div className="flex items-center gap-2 pt-1">
+-      <input
+-        placeholder="+2547XXXXXXXX"
+-        value={phone}
+-        onChange={(e) => setPhone(e.target.value)}
+-        className="border rounded px-2 py-1.5 text-sm w-40"
+-      />
+-      <button onClick={pay} disabled={busy} className="bg-black text-white text-xs rounded px-3 py-1.5 disabled:opacity-50">
+-        {busy ? 'Sending prompt…' : `Pay KSh ${booking.amount.toLocaleString()}`}
+-      </button>
+-      {error && <span className="text-xs text-red-600">{error}</span>}
++    <div className="space-y-1 pt-1">
++      <p className="text-[.68rem] text-gray-500">
++        KSh {booking.amount.toLocaleString()} + KSh {fee.toLocaleString()} processing fee = KSh {total.toLocaleString()}
++      </p>
++      <div className="flex items-center gap-2">
++        <input
++          placeholder="+2547XXXXXXXX"
++          value={phone}
++          onChange={(e) => setPhone(e.target.value)}
++          className="border rounded px-2 py-1.5 text-sm w-40"
++        />
++        <button onClick={pay} disabled={busy} className="bg-black text-white text-xs rounded px-3 py-1.5 disabled:opacity-50">
++          {busy ? 'Sending prompt…' : `Pay KSh ${total.toLocaleString()}`}
++        </button>
++        {error && <span className="text-xs text-red-600">{error}</span>}
++      </div>
+     </div>
+   );
+ }
+@@ -66,7 +74,14 @@ function BookingRow({ booking }: { booking: Booking }) {
+         <span className="text-xs text-gray-500">{STATUS_LABEL[booking.status]}</span>
+       </div>
+       <p className="text-xs text-gray-500">{booking.serviceName} · {booking.proposedDate}</p>
+-      {booking.amount > 0 && <p className="text-xs text-gray-600">Amount: KSh {booking.amount.toLocaleString()}</p>}
++      {booking.amount > 0 && (
++        <p className="text-xs text-gray-600">
++          Price: KSh {booking.amount.toLocaleString()}
++          {(booking.status === 'accepted' || booking.status === 'payment_failed') && (
++            <> (KSh {grossUpForPaystackFee(booking.amount).toLocaleString()} incl. processing fee)</>
++          )}
++        </p>
++      )}
+       {(booking.status === 'accepted' || booking.status === 'payment_failed') && <PayBox booking={booking} />}
+     </div>
+   );
+@@ -95,7 +110,7 @@ export default function BookingsSection() {
+       ) : bookings.length === 0 ? (
+         <div className="border rounded-lg p-8 text-center">
+           <p className="text-sm text-gray-500">
+-            No bookings yet — request one from a photographer's portfolio in the Cogvana section.
++            No bookings yet — request one from a photographer's portfolio in the Directory section.
+           </p>
+         </div>
+       ) : (
+diff --git a/src/readers/dashboard/ReaderShell.tsx b/src/readers/dashboard/ReaderShell.tsx
+index 5486f96..6b08b3c 100644
+--- a/src/readers/dashboard/ReaderShell.tsx
++++ b/src/readers/dashboard/ReaderShell.tsx
+@@ -1,4 +1,4 @@
+-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
++import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
+ import { useReaderAuth } from '../context/ReaderAuthContext';
+ 
+ const TABS = [
+@@ -21,12 +21,12 @@ export default function ReaderShell() {
+   return (
+     <div style={{ display: 'flex', minHeight: '100vh' }}>
+       <aside style={{ width: 200, borderRight: '1px solid #e5e5e5', flexShrink: 0 }} className="hidden md:flex flex-col">
+-        <div className="p-4 border-b" style={{ borderColor: '#e5e5e5' }}>
++        <Link to="/" className="p-4 border-b block hover:bg-gray-50" style={{ borderColor: '#e5e5e5' }}>
+           <p style={{ fontFamily: "'Playfair Display',serif", fontSize: '1.2rem', fontWeight: 900 }}>P&amp;S</p>
+           <p style={{ fontSize: '.55rem', letterSpacing: '.2em', color: 'var(--gold, #c9a84c)', textTransform: 'uppercase' }}>
+             My Account
+           </p>
+-        </div>
++        </Link>
+         <nav className="flex-1 p-2">
+           {TABS.map((tab) => (
+             <NavLink
+@@ -40,14 +40,33 @@ export default function ReaderShell() {
+             </NavLink>
+           ))}
+         </nav>
+-        <div className="p-3 border-t" style={{ borderColor: '#e5e5e5' }}>
+-          <p className="text-xs text-gray-500 truncate mb-2">{profile?.displayName || 'Reader'}</p>
++        <div className="p-3 border-t space-y-2" style={{ borderColor: '#e5e5e5' }}>
++          <Link to="/" className="block text-xs text-gray-600 hover:text-black">
++            ← Back to site
++          </Link>
++          <p className="text-xs text-gray-500 truncate">{profile?.displayName || 'Reader'}</p>
+           <button onClick={handleLogout} className="w-full text-xs text-left text-red-600">
+             Sign out
+           </button>
+         </div>
+       </aside>
+ 
++      {/* Mobile top bar — the bottom nav below is tab-only, so a fixed top
++          bar is the only place a "back to site" link can live without
++          crowding the tab bar. */}
++      <div
++        className="md:hidden fixed top-0 left-0 right-0 bg-white border-b flex items-center justify-between px-4 py-2 z-40"
++        style={{ borderColor: '#e5e5e5' }}
++      >
++        <Link to="/" className="text-xs text-gray-600 flex items-center gap-1">
++          ← Site
++        </Link>
++        <p style={{ fontFamily: "'Playfair Display',serif", fontSize: '.95rem', fontWeight: 900 }}>P&amp;S</p>
++        <button onClick={handleLogout} className="text-xs text-red-600">
++          Sign out
++        </button>
++      </div>
++
+       <div
+         className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t flex justify-around z-40"
+         style={{ borderColor: '#e5e5e5' }}
+@@ -63,7 +82,7 @@ export default function ReaderShell() {
+         ))}
+       </div>
+ 
+-      <main className="flex-1 pb-16 md:pb-0">
++      <main className="flex-1 pb-16 pt-12 md:pt-0 md:pb-0">
+         <Outlet />
+       </main>
+     </div>
+diff --git a/src/readers/onboarding/ReaderLogin.tsx b/src/readers/onboarding/ReaderLogin.tsx
+index 6e4ed5d..e5d03f8 100644
+--- a/src/readers/onboarding/ReaderLogin.tsx
++++ b/src/readers/onboarding/ReaderLogin.tsx
+@@ -5,7 +5,7 @@ import { useReaderAuth } from '../context/ReaderAuthContext';
+ const PHONE_RECAPTCHA_ID = 'reader-phone-recaptcha-container';
+ 
+ export default function ReaderLogin() {
+-  const { signInWithGoogle, requestPhoneCode, confirmPhoneCode, step, authError } = useReaderAuth();
++  const { signInWithGoogle, requestPhoneCode, confirmPhoneCode, step, authError, crossAccountConflict } = useReaderAuth();
+   const [mode, setMode] = useState<'choose' | 'phone-entry' | 'phone-otp'>('choose');
+   const [phone, setPhone] = useState('');
+   const [otp, setOtp] = useState('');
+@@ -92,7 +92,17 @@ export default function ReaderLogin() {
+           </div>
+         )}
+ 
+-        {authError && <p className="text-sm text-red-600 text-center">{authError}</p>}
++        {authError && (
++          <p className="text-sm text-red-600 text-center">
++            {authError}
++            {crossAccountConflict && (
++              <>
++                {' '}
++                <Link to="/partners" className="underline">Go to photographer portal →</Link>
++              </>
++            )}
++          </p>
++        )}
+ 
+         <p className="text-center text-xs text-gray-500">
+           <Link to="/" style={{ color: 'rgba(201,168,76,.75)' }}>← Back to P&amp;S Magazine</Link>
+diff --git a/src/site/SiteApp.tsx b/src/site/SiteApp.tsx
+index 9c8e6c1..c0aa144 100644
+--- a/src/site/SiteApp.tsx
++++ b/src/site/SiteApp.tsx
+@@ -18,8 +18,14 @@ import BookFooterPage from './pages/BookFooterPage';
+ import StoryModal, { SharedLinkOverlay } from './components/StoryModal';
+ 
+ const PAGE_COMPONENTS = [HeroPage, StoriesPage, VotingPage, CogvanaPage, ServicesPage, PartnersPage, SponsoredPage, ShopPage, BookFooterPage];
+-const PAGE_BG = ['transparent', 'var(--warm-white)', 'var(--black)', 'var(--warm-white)', 'var(--black)', 'var(--warm-white)', 'var(--black)', 'var(--warm-white)', 'var(--warm-white)'];
+-const PAGE_LABELS = ['', 'Stories', 'Voting', 'Cogvana', 'Services', 'Partners', 'Sponsored', 'Shop', 'Book'];
++// NOTE: index 3 (the photographer directory) is intentionally dark, not
++// alternating with its neighbours — CogvanaPage.tsx's cards/text (business
++// name, service titles) are styled in warm-white/gold/white assuming a dark
++// backdrop. It used to sit on a light background here, which made that text
++// render white-on-near-white and unreadable. Keep this in sync with
++// CogvanaPage's own color choices if that page's palette ever changes.
++const PAGE_BG = ['transparent', 'var(--warm-white)', 'var(--black)', 'var(--black)', 'var(--black)', 'var(--warm-white)', 'var(--black)', 'var(--warm-white)', 'var(--warm-white)'];
++const PAGE_LABELS = ['', 'Stories', 'Voting', 'Directory', 'Services', 'Partners', 'Sponsored', 'Shop', 'Book'];
+ 
+ function triggerReveal(page: HTMLDivElement | null) {
+   if (!page) return;
+diff --git a/src/site/components/BookingRequestModal.tsx b/src/site/components/BookingRequestModal.tsx
+index 1fff313..0074ef5 100644
+--- a/src/site/components/BookingRequestModal.tsx
++++ b/src/site/components/BookingRequestModal.tsx
+@@ -4,6 +4,7 @@ import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+ import { db } from '../../lib/firebase';
+ import { useReaderAuth } from '../../readers/context/ReaderAuthContext';
+ import type { PhotographerService } from '../../partners/types';
++import { MIN_BOOKING_FEE_KES, PAYSTACK_FEE_PERCENT, grossUpForPaystackFee } from '../../bookings/types';
+ 
+ export default function BookingRequestModal({
+   photographerId,
+@@ -17,7 +18,12 @@ export default function BookingRequestModal({
+   onClose: () => void;
+ }) {
+   const { currentUser: reader, profile: readerProfile } = useReaderAuth();
+-  const [serviceName, setServiceName] = useState(services[0]?.name ?? '');
++  // Only services the photographer has actually priced are bookable — the
++  // amount is fixed at request time and never edited afterwards, so an
++  // unpriced service has nothing to charge.
++  const bookableServices = services.filter((s) => s.priceFrom >= MIN_BOOKING_FEE_KES);
++  const [serviceName, setServiceName] = useState(bookableServices[0]?.name ?? '');
++  const selectedService = bookableServices.find((s) => s.name === serviceName) ?? null;
+   const [proposedDate, setProposedDate] = useState('');
+   const [notes, setNotes] = useState('');
+   const [submitting, setSubmitting] = useState(false);
+@@ -27,7 +33,7 @@ export default function BookingRequestModal({
+   const submit = async () => {
+     if (!reader || !readerProfile) return;
+     setError(null);
+-    if (!serviceName.trim() || !proposedDate.trim()) {
++    if (!selectedService || !proposedDate.trim()) {
+       setError('Pick a service and a preferred date.');
+       return;
+     }
+@@ -39,10 +45,12 @@ export default function BookingRequestModal({
+         readerId: reader.uid,
+         readerName: readerProfile.displayName,
+         readerPhone: readerProfile.phone,
+-        serviceName: serviceName.trim(),
++        serviceName: selectedService.name,
+         proposedDate: proposedDate.trim(),
+         notes: notes.trim(),
+-        amount: 0,
++        // Fixed at request time from the photographer's own price list —
++        // never edited by the photographer or the reader afterwards.
++        amount: selectedService.priceFrom,
+         status: 'requested',
+         createdAt: serverTimestamp(),
+         updatedAt: serverTimestamp(),
+@@ -88,59 +96,67 @@ export default function BookingRequestModal({
+               Book {photographerBusinessName}
+             </p>
+ 
+-            {services.length > 0 ? (
+-              <select
+-                value={serviceName}
+-                onChange={(e) => setServiceName(e.target.value)}
+-                className="w-full border rounded px-3 py-2 text-sm"
+-                style={{ background: '#fff', color: '#000' }}
+-              >
+-                {services.map((s) => (
+-                  <option key={s.name} value={s.name}>
+-                    {s.name} {s.priceFrom ? `— from KSh ${s.priceFrom.toLocaleString()}` : ''}
+-                  </option>
+-                ))}
+-              </select>
++            {bookableServices.length === 0 ? (
++              <p style={{ fontSize: '.78rem', color: 'var(--warm-gray)' }}>
++                {photographerBusinessName} hasn't set up bookable pricing yet — try the phone number on their profile
++                instead.
++              </p>
+             ) : (
+-              <input
+-                placeholder="What service are you looking for?"
+-                value={serviceName}
+-                onChange={(e) => setServiceName(e.target.value)}
+-                className="w-full border rounded px-3 py-2 text-sm"
+-                style={{ background: '#fff', color: '#000' }}
+-              />
+-            )}
++              <>
++                <select
++                  value={serviceName}
++                  onChange={(e) => setServiceName(e.target.value)}
++                  className="w-full border rounded px-3 py-2 text-sm"
++                  style={{ background: '#fff', color: '#000' }}
++                >
++                  {bookableServices.map((s) => (
++                    <option key={s.name} value={s.name}>
++                      {s.name} — KSh {s.priceFrom.toLocaleString()}
++                    </option>
++                  ))}
++                </select>
+ 
+-            <input
+-              placeholder="Preferred date (e.g. 14 Aug, or 'flexible')"
+-              value={proposedDate}
+-              onChange={(e) => setProposedDate(e.target.value)}
+-              className="w-full border rounded px-3 py-2 text-sm"
+-              style={{ background: '#fff', color: '#000' }}
+-            />
++                {selectedService && (
++                  <p className="text-[.68rem]" style={{ color: 'var(--warm-gray)' }}>
++                    Fixed price: KSh {selectedService.priceFrom.toLocaleString()}. You'll pay KSh{' '}
++                    {grossUpForPaystackFee(selectedService.priceFrom).toLocaleString()} by M-Pesa once accepted
++                    (includes a {PAYSTACK_FEE_PERCENT}% payment processing fee).
++                  </p>
++                )}
+ 
+-            <textarea
+-              placeholder="Anything else the photographer should know? (optional)"
+-              value={notes}
+-              onChange={(e) => setNotes(e.target.value)}
+-              rows={3}
+-              className="w-full border rounded px-3 py-2 text-sm"
+-              style={{ background: '#fff', color: '#000' }}
+-            />
++                <input
++                  placeholder="Preferred date (e.g. 14 Aug, or 'flexible')"
++                  value={proposedDate}
++                  onChange={(e) => setProposedDate(e.target.value)}
++                  className="w-full border rounded px-3 py-2 text-sm"
++                  style={{ background: '#fff', color: '#000' }}
++                />
+ 
+-            {error && <p className="text-xs" style={{ color: '#f87171' }}>{error}</p>}
++                <textarea
++                  placeholder="Anything else the photographer should know? (optional)"
++                  value={notes}
++                  onChange={(e) => setNotes(e.target.value)}
++                  rows={3}
++                  className="w-full border rounded px-3 py-2 text-sm"
++                  style={{ background: '#fff', color: '#000' }}
++                />
+ 
+-            <div className="flex gap-2">
+-              <button onClick={onClose} className="flex-1 btn-outline-gold text-xs" style={{ padding: '.55rem' }}>
+-                Cancel
+-              </button>
+-              <button onClick={submit} disabled={submitting} className="flex-1 btn-gold text-xs disabled:opacity-50" style={{ padding: '.55rem' }}>
+-                {submitting ? 'Sending…' : 'Send request'}
+-              </button>
+-            </div>
+-            <p className="text-[.62rem]" style={{ color: 'var(--warm-gray)' }}>
+-              The photographer sets the final price when they accept — you'll pay by M-Pesa once agreed.
+-            </p>
++                {error && <p className="text-xs" style={{ color: '#f87171' }}>{error}</p>}
++
++                <div className="flex gap-2">
++                  <button onClick={onClose} className="flex-1 btn-outline-gold text-xs" style={{ padding: '.55rem' }}>
++                    Cancel
++                  </button>
++                  <button onClick={submit} disabled={submitting} className="flex-1 btn-gold text-xs disabled:opacity-50" style={{ padding: '.55rem' }}>
++                    {submitting ? 'Sending…' : 'Send request'}
++                  </button>
++                </div>
++                <p className="text-[.62rem]" style={{ color: 'var(--warm-gray)' }}>
++                  The price is fixed by the photographer for this service — it won't change after you send this
++                  request.
++                </p>
++              </>
++            )}
+           </div>
+         )}
+       </div>
+diff --git a/src/site/components/MobileMenu.tsx b/src/site/components/MobileMenu.tsx
+index d440435..8afa231 100644
+--- a/src/site/components/MobileMenu.tsx
++++ b/src/site/components/MobileMenu.tsx
+@@ -6,7 +6,7 @@ const ITEMS: { label: string; page: number }[] = [
+   { label: 'Home', page: 0 },
+   { label: 'Stories', page: 1 },
+   { label: 'Voting Arena', page: 2 },
+-  { label: 'Cogvana Visuals', page: 3 },
++  { label: 'Directory', page: 3 },
+   { label: 'Services', page: 4 },
+   { label: 'Partners', page: 5 },
+   { label: 'Sponsored', page: 6 },
+diff --git a/src/site/components/Nav.tsx b/src/site/components/Nav.tsx
+index 06e1f47..0de5952 100644
+--- a/src/site/components/Nav.tsx
++++ b/src/site/components/Nav.tsx
+@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
+ import { useSite } from '../context/SiteContext';
+ import { useReaderAuth } from '../../readers/context/ReaderAuthContext';
+ 
+-const NAV_LINKS = ['Stories', 'Voting', 'Cogvana', 'Services', 'Partners', 'Sponsored', 'Shop', 'Book'];
++const NAV_LINKS = ['Stories', 'Voting', 'Directory', 'Services', 'Partners', 'Sponsored', 'Shop', 'Book'];
+ 
+ export default function Nav() {
+   const { goToPage, toggleMobileMenu, mobileMenuOpen, openModal, siteSettings } = useSite();
+diff --git a/src/site/components/PageNavUI.tsx b/src/site/components/PageNavUI.tsx
+index 3d9c207..f6e2626 100644
+--- a/src/site/components/PageNavUI.tsx
++++ b/src/site/components/PageNavUI.tsx
+@@ -1,6 +1,6 @@
+ import { useSite, TOTAL_PAGES } from '../context/SiteContext';
+ 
+-const PAGE_TITLES = ['Hero', 'Stories', 'Voting', 'Cogvana', 'Services', 'Partners', 'Sponsored', 'Shop', 'Book'];
++const PAGE_TITLES = ['Hero', 'Stories', 'Voting', 'Directory', 'Services', 'Partners', 'Sponsored', 'Shop', 'Book'];
+ 
+ export default function PageNavUI() {
+   const { currentPage, goToPage, swipeHintVisible } = useSite();
+diff --git a/src/site/components/ReportModal.tsx b/src/site/components/ReportModal.tsx
+index 8748333..4d4cf20 100644
+--- a/src/site/components/ReportModal.tsx
++++ b/src/site/components/ReportModal.tsx
+@@ -7,11 +7,17 @@ export default function ReportModal({
+   targetType,
+   targetId,
+   photographerId,
++  imageUrl,
+   onClose,
+ }: {
+   targetType: Report['targetType'];
+   targetId: string;
+   photographerId: string;
++  // Denormalized onto the report doc at write time so the admin queue can
++  // show the actual reported image without a follow-up read — and so it
++  // still shows up even if the photographer deletes/replaces the image
++  // before an admin gets to review it.
++  imageUrl?: string | null;
+   onClose: () => void;
+ }) {
+   const [reason, setReason] = useState<string>(REPORT_REASONS[0]);
+@@ -26,6 +32,7 @@ export default function ReportModal({
+         targetType,
+         targetId,
+         photographerId,
++        imageUrl: imageUrl ?? null,
+         reporterUserId: null, // reader accounts land in Phase 2; anonymous for now
+         reason: note.trim() ? `${reason}: ${note.trim()}` : reason,
+         status: 'open',
+diff --git a/src/site/pages/CogvanaPage.tsx b/src/site/pages/CogvanaPage.tsx
+index 10578fd..4842603 100644
+--- a/src/site/pages/CogvanaPage.tsx
++++ b/src/site/pages/CogvanaPage.tsx
+@@ -90,11 +90,27 @@ function DirectoryView({ onSelect }: { onSelect: (id: string) => void }) {
+               onClick={() => onSelect(p.id)}
+               style={{ background: 'rgba(255,255,255,.04)', border: '1px solid rgba(201,168,76,.15)', borderRadius: 8, padding: '1rem', cursor: 'pointer' }}
+             >
+-              <p style={{ fontFamily: "'Playfair Display',serif", fontSize: '1rem', fontWeight: 700, color: '#fff' }}>
+-                {p.businessName}
+-                {p.verified && <span style={{ color: 'var(--gold)', fontSize: '.7rem', marginLeft: 6 }}>✓ Verified</span>}
+-              </p>
+-              <p style={{ fontSize: '.68rem', color: 'var(--warm-gray)', marginTop: 2 }}>{p.county}</p>
++              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
++                <div
++                  style={{
++                    width: 40, height: 40, borderRadius: '50%', flexShrink: 0, overflow: 'hidden',
++                    background: 'rgba(201,168,76,.15)', display: 'flex', alignItems: 'center', justifyContent: 'center',
++                  }}
++                >
++                  {p.coverImageUrl ? (
++                    <img src={p.coverImageUrl} alt={p.businessName} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
++                  ) : (
++                    <span style={{ color: 'var(--gold)', fontSize: '.85rem', fontWeight: 700 }}>
++                      {p.businessName?.[0]?.toUpperCase() ?? '?'}
++                    </span>
++                  )}
++                </div>
++                <p style={{ fontFamily: "'Playfair Display',serif", fontSize: '1rem', fontWeight: 700, color: '#fff' }}>
++                  {p.businessName}
++                  {p.verified && <span style={{ color: 'var(--gold)', fontSize: '.7rem', marginLeft: 6 }}>✓ Verified</span>}
++                </p>
++              </div>
++              <p style={{ fontSize: '.68rem', color: 'var(--warm-gray)', marginTop: 6 }}>{p.county}</p>
+               <p style={{ fontSize: '.62rem', color: 'var(--gold)', marginTop: 6 }}>{p.categories?.join(' · ')}</p>
+               <p style={{ fontSize: '.62rem', color: 'var(--warm-gray)', marginTop: 6 }}>♥ {p.likesCount ?? 0}</p>
+             </div>
+@@ -109,7 +125,7 @@ function PortfolioView({ photographerId, onBack }: { photographerId: string; onB
+   const { profile, images, loading } = usePhotographerPortfolio(photographerId);
+   const { openLightbox } = useSite();
+   const liked = useHasLiked(photographerId);
+-  const [showReport, setShowReport] = useState<{ type: 'photographer' | 'galleryImage'; id: string } | null>(null);
++  const [showReport, setShowReport] = useState<{ type: 'photographer' | 'galleryImage'; id: string; imageUrl?: string | null } | null>(null);
+   const [showBooking, setShowBooking] = useState(false);
+ 
+   if (loading || !profile) {
+@@ -130,14 +146,30 @@ function PortfolioView({ photographerId, onBack }: { photographerId: string; onB
+       </button>
+ 
+       <div className="reveal flex items-start justify-between flex-wrap gap-4 mb-6">
+-        <div>
+-          <h2 className="section-title" style={{ color: 'var(--warm-white)' }}>
+-            {profile.businessName}
+-            {profile.verified && <span style={{ color: 'var(--gold)', fontSize: '.7rem', marginLeft: 8 }}>✓ Verified</span>}
+-          </h2>
+-          <p style={{ fontSize: '.72rem', color: 'var(--warm-gray)', marginTop: 4 }}>{profile.county}</p>
+-          <p style={{ fontSize: '.62rem', color: 'var(--gold)', marginTop: 6 }}>{profile.categories?.join(' · ')}</p>
+-          <p style={{ fontSize: '.78rem', color: 'var(--warm-white)', marginTop: 10, maxWidth: 480 }}>{profile.bio}</p>
++        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
++          <div
++            style={{
++              width: 72, height: 72, borderRadius: '50%', flexShrink: 0, overflow: 'hidden',
++              background: 'rgba(201,168,76,.15)', display: 'flex', alignItems: 'center', justifyContent: 'center',
++            }}
++          >
++            {profile.coverImageUrl ? (
++              <img src={profile.coverImageUrl} alt={profile.businessName} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
++            ) : (
++              <span style={{ color: 'var(--gold)', fontSize: '1.6rem', fontWeight: 700 }}>
++                {profile.businessName?.[0]?.toUpperCase() ?? '?'}
++              </span>
++            )}
++          </div>
++          <div>
++            <h2 className="section-title" style={{ color: 'var(--warm-white)' }}>
++              {profile.businessName}
++              {profile.verified && <span style={{ color: 'var(--gold)', fontSize: '.7rem', marginLeft: 8 }}>✓ Verified</span>}
++            </h2>
++            <p style={{ fontSize: '.72rem', color: 'var(--warm-gray)', marginTop: 4 }}>{profile.county}</p>
++            <p style={{ fontSize: '.62rem', color: 'var(--gold)', marginTop: 6 }}>{profile.categories?.join(' · ')}</p>
++            <p style={{ fontSize: '.78rem', color: 'var(--warm-white)', marginTop: 10, maxWidth: 480 }}>{profile.bio}</p>
++          </div>
+         </div>
+         <div className="flex flex-col items-end gap-2">
+           <button
+@@ -155,7 +187,7 @@ function PortfolioView({ photographerId, onBack }: { photographerId: string; onB
+           <a href={`tel:${profile.phone}`} className="text-xs" style={{ color: 'var(--warm-gray)' }}>
+             {profile.phone}
+           </a>
+-          <button onClick={() => setShowReport({ type: 'photographer', id: photographerId })} className="text-[.65rem]" style={{ color: 'var(--warm-gray)' }}>
++          <button onClick={() => setShowReport({ type: 'photographer', id: photographerId, imageUrl: profile.coverImageUrl })} className="text-[.65rem]" style={{ color: 'var(--warm-gray)' }}>
+             Report profile
+           </button>
+         </div>
+@@ -197,7 +229,7 @@ function PortfolioView({ photographerId, onBack }: { photographerId: string; onB
+               <button
+                 onClick={(e) => {
+                   e.stopPropagation();
+-                  setShowReport({ type: 'galleryImage', id: img.id });
++                  setShowReport({ type: 'galleryImage', id: img.id, imageUrl: img.imageUrl });
+                 }}
+                 style={{ position: 'absolute', bottom: 4, right: 4, fontSize: '.55rem', color: 'rgba(255,255,255,.7)', background: 'rgba(0,0,0,.4)', borderRadius: 4, padding: '2px 5px' }}
+               >
+@@ -213,6 +245,7 @@ function PortfolioView({ photographerId, onBack }: { photographerId: string; onB
+           targetType={showReport.type}
+           targetId={showReport.id}
+           photographerId={photographerId}
++          imageUrl={showReport.imageUrl}
+           onClose={() => setShowReport(null)}
+         />
+       )}
+diff --git a/storage.rules b/storage.rules
+index fb653c3..bf7c8a7 100644
+--- a/storage.rules
++++ b/storage.rules
+@@ -93,6 +93,18 @@ service firebase.storage {
+       allow delete: if isPhotographerOwner(photographerId) || isAdmin();
+     }
+ 
++    // ── Photographer cover photo / logo (profile identification image) ────
++    // Small, publicly-displayed image shown in the directory and on the
++    // photographer's own portfolio header — unlike gallery portfolio shots,
++    // this doesn't go through the watermarking pipeline, so the owner can
++    // write it directly. Admin can delete it unilaterally (terms
++    // violations) without needing the photographer's cooperation.
++    match /photographers/{photographerId}/cover/{allPaths=**} {
++      allow read: if true;
++      allow write: if (isPhotographerOwner(photographerId) && isValidImageUpload()) || isAdmin();
++      allow delete: if isPhotographerOwner(photographerId) || isAdmin();
++    }
++
+     // ── Photographer shoot-session uploads (private, delivery matching) ───
+     // Never publicly readable — raw camera dumps awaiting client matching,
+     // not portfolio content. No watermarking applied; full quality is the

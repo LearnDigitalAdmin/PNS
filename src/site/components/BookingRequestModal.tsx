@@ -4,6 +4,7 @@ import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { useReaderAuth } from '../../readers/context/ReaderAuthContext';
 import type { PhotographerService } from '../../partners/types';
+import { MIN_BOOKING_FEE_KES, PAYSTACK_FEE_PERCENT, grossUpForPaystackFee } from '../../bookings/types';
 
 export default function BookingRequestModal({
   photographerId,
@@ -17,7 +18,12 @@ export default function BookingRequestModal({
   onClose: () => void;
 }) {
   const { currentUser: reader, profile: readerProfile } = useReaderAuth();
-  const [serviceName, setServiceName] = useState(services[0]?.name ?? '');
+  // Only services the photographer has actually priced are bookable — the
+  // amount is fixed at request time and never edited afterwards, so an
+  // unpriced service has nothing to charge.
+  const bookableServices = services.filter((s) => s.priceFrom >= MIN_BOOKING_FEE_KES);
+  const [serviceName, setServiceName] = useState(bookableServices[0]?.name ?? '');
+  const selectedService = bookableServices.find((s) => s.name === serviceName) ?? null;
   const [proposedDate, setProposedDate] = useState('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -27,7 +33,7 @@ export default function BookingRequestModal({
   const submit = async () => {
     if (!reader || !readerProfile) return;
     setError(null);
-    if (!serviceName.trim() || !proposedDate.trim()) {
+    if (!selectedService || !proposedDate.trim()) {
       setError('Pick a service and a preferred date.');
       return;
     }
@@ -39,10 +45,12 @@ export default function BookingRequestModal({
         readerId: reader.uid,
         readerName: readerProfile.displayName,
         readerPhone: readerProfile.phone,
-        serviceName: serviceName.trim(),
+        serviceName: selectedService.name,
         proposedDate: proposedDate.trim(),
         notes: notes.trim(),
-        amount: 0,
+        // Fixed at request time from the photographer's own price list —
+        // never edited by the photographer or the reader afterwards.
+        amount: selectedService.priceFrom,
         status: 'requested',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -88,59 +96,67 @@ export default function BookingRequestModal({
               Book {photographerBusinessName}
             </p>
 
-            {services.length > 0 ? (
-              <select
-                value={serviceName}
-                onChange={(e) => setServiceName(e.target.value)}
-                className="w-full border rounded px-3 py-2 text-sm"
-                style={{ background: '#fff', color: '#000' }}
-              >
-                {services.map((s) => (
-                  <option key={s.name} value={s.name}>
-                    {s.name} {s.priceFrom ? `— from KSh ${s.priceFrom.toLocaleString()}` : ''}
-                  </option>
-                ))}
-              </select>
+            {bookableServices.length === 0 ? (
+              <p style={{ fontSize: '.78rem', color: 'var(--warm-gray)' }}>
+                {photographerBusinessName} hasn't set up bookable pricing yet — try the phone number on their profile
+                instead.
+              </p>
             ) : (
-              <input
-                placeholder="What service are you looking for?"
-                value={serviceName}
-                onChange={(e) => setServiceName(e.target.value)}
-                className="w-full border rounded px-3 py-2 text-sm"
-                style={{ background: '#fff', color: '#000' }}
-              />
+              <>
+                <select
+                  value={serviceName}
+                  onChange={(e) => setServiceName(e.target.value)}
+                  className="w-full border rounded px-3 py-2 text-sm"
+                  style={{ background: '#fff', color: '#000' }}
+                >
+                  {bookableServices.map((s) => (
+                    <option key={s.name} value={s.name}>
+                      {s.name} — KSh {s.priceFrom.toLocaleString()}
+                    </option>
+                  ))}
+                </select>
+
+                {selectedService && (
+                  <p className="text-[.68rem]" style={{ color: 'var(--warm-gray)' }}>
+                    Fixed price: KSh {selectedService.priceFrom.toLocaleString()}. You'll pay KSh{' '}
+                    {grossUpForPaystackFee(selectedService.priceFrom).toLocaleString()} by M-Pesa once accepted
+                    (includes a {PAYSTACK_FEE_PERCENT}% payment processing fee).
+                  </p>
+                )}
+
+                <input
+                  placeholder="Preferred date (e.g. 14 Aug, or 'flexible')"
+                  value={proposedDate}
+                  onChange={(e) => setProposedDate(e.target.value)}
+                  className="w-full border rounded px-3 py-2 text-sm"
+                  style={{ background: '#fff', color: '#000' }}
+                />
+
+                <textarea
+                  placeholder="Anything else the photographer should know? (optional)"
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  rows={3}
+                  className="w-full border rounded px-3 py-2 text-sm"
+                  style={{ background: '#fff', color: '#000' }}
+                />
+
+                {error && <p className="text-xs" style={{ color: '#f87171' }}>{error}</p>}
+
+                <div className="flex gap-2">
+                  <button onClick={onClose} className="flex-1 btn-outline-gold text-xs" style={{ padding: '.55rem' }}>
+                    Cancel
+                  </button>
+                  <button onClick={submit} disabled={submitting} className="flex-1 btn-gold text-xs disabled:opacity-50" style={{ padding: '.55rem' }}>
+                    {submitting ? 'Sending…' : 'Send request'}
+                  </button>
+                </div>
+                <p className="text-[.62rem]" style={{ color: 'var(--warm-gray)' }}>
+                  The price is fixed by the photographer for this service — it won't change after you send this
+                  request.
+                </p>
+              </>
             )}
-
-            <input
-              placeholder="Preferred date (e.g. 14 Aug, or 'flexible')"
-              value={proposedDate}
-              onChange={(e) => setProposedDate(e.target.value)}
-              className="w-full border rounded px-3 py-2 text-sm"
-              style={{ background: '#fff', color: '#000' }}
-            />
-
-            <textarea
-              placeholder="Anything else the photographer should know? (optional)"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              rows={3}
-              className="w-full border rounded px-3 py-2 text-sm"
-              style={{ background: '#fff', color: '#000' }}
-            />
-
-            {error && <p className="text-xs" style={{ color: '#f87171' }}>{error}</p>}
-
-            <div className="flex gap-2">
-              <button onClick={onClose} className="flex-1 btn-outline-gold text-xs" style={{ padding: '.55rem' }}>
-                Cancel
-              </button>
-              <button onClick={submit} disabled={submitting} className="flex-1 btn-gold text-xs disabled:opacity-50" style={{ padding: '.55rem' }}>
-                {submitting ? 'Sending…' : 'Send request'}
-              </button>
-            </div>
-            <p className="text-[.62rem]" style={{ color: 'var(--warm-gray)' }}>
-              The photographer sets the final price when they accept — you'll pay by M-Pesa once agreed.
-            </p>
           </div>
         )}
       </div>

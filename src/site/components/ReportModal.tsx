@@ -7,11 +7,17 @@ export default function ReportModal({
   targetType,
   targetId,
   photographerId,
+  imageUrl,
   onClose,
 }: {
   targetType: Report['targetType'];
   targetId: string;
   photographerId: string;
+  // Denormalized onto the report doc at write time so the admin queue can
+  // show the actual reported image without a follow-up read — and so it
+  // still shows up even if the photographer deletes/replaces the image
+  // before an admin gets to review it.
+  imageUrl?: string | null;
   onClose: () => void;
 }) {
   const [reason, setReason] = useState<string>(REPORT_REASONS[0]);
@@ -26,6 +32,7 @@ export default function ReportModal({
         targetType,
         targetId,
         photographerId,
+        imageUrl: imageUrl ?? null,
         reporterUserId: null, // reader accounts land in Phase 2; anonymous for now
         reason: note.trim() ? `${reason}: ${note.trim()}` : reason,
         status: 'open',

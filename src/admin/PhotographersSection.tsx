@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { collection, doc, onSnapshot, orderBy, query, updateDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { ref, deleteObject } from 'firebase/storage';
+import { db, storage } from '../lib/firebase';
 import { useAdminData } from './context/AdminDataContext';
 
 interface Row {
@@ -14,6 +15,7 @@ interface Row {
   verified: boolean;
   storageUsedBytes: number;
   storageCapBytes: number;
+  coverImageUrl?: string;
 }
 
 function fmtBytes(b: number) {
@@ -41,6 +43,20 @@ export default function PhotographersSection() {
   const toggleVerified = async (row: Row) => {
     await updateDoc(doc(db, 'photographers', row.id), { verified: !row.verified });
     showToast(row.verified ? 'Verified badge removed' : 'Photographer verified', 'success');
+  };
+
+  const removeCoverPhoto = (row: Row) => {
+    openConfirm(
+      'Remove this profile photo?',
+      `This clears ${row.businessName || 'this photographer'}'s cover photo/logo from the directory and their portfolio. They can upload a new one at any time.`,
+      async () => {
+        await updateDoc(doc(db, 'photographers', row.id), { coverImageUrl: '' });
+        for (const ext of ['jpg', 'png']) {
+          deleteObject(ref(storage, `photographers/${row.id}/cover/cover.${ext}`)).catch(() => {});
+        }
+        showToast('Profile photo removed', 'danger');
+      }
+    );
   };
 
   const toggleSuspended = (row: Row) => {
@@ -76,6 +92,7 @@ export default function PhotographersSection() {
         <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: 'rgba(0,0,0,.03)', textAlign: 'left' }}>
+              <th className="p-3">Photo</th>
               <th className="p-3">Business</th>
               <th className="p-3">Location</th>
               <th className="p-3">Categories</th>
@@ -88,6 +105,20 @@ export default function PhotographersSection() {
           <tbody>
             {filtered.map((r) => (
               <tr key={r.id} style={{ borderTop: '1px solid var(--line)' }}>
+                <td className="p-3">
+                  <div
+                    style={{
+                      width: 36, height: 36, borderRadius: '50%', overflow: 'hidden', flexShrink: 0,
+                      background: 'rgba(0,0,0,.06)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}
+                  >
+                    {r.coverImageUrl ? (
+                      <img src={r.coverImageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    ) : (
+                      <span style={{ fontSize: '.7rem', color: 'var(--warm-gray)' }}>—</span>
+                    )}
+                  </div>
+                </td>
                 <td className="p-3">
                   <p style={{ fontWeight: 600 }}>{r.businessName || '(unnamed)'}</p>
                   <p style={{ fontSize: '.72rem', color: 'var(--warm-gray)' }}>{r.ownerName} · {r.phone}</p>
@@ -105,6 +136,11 @@ export default function PhotographersSection() {
                   <button onClick={() => toggleVerified(r)} className="btn-outline-admin" style={{ fontSize: '.68rem', padding: '.3rem .6rem' }}>
                     {r.verified ? 'Unverify' : 'Verify'}
                   </button>
+                  {r.coverImageUrl && (
+                    <button onClick={() => removeCoverPhoto(r)} className="btn-danger-admin" style={{ fontSize: '.68rem', padding: '.3rem .6rem' }}>
+                      Remove photo
+                    </button>
+                  )}
                   <button
                     onClick={() => toggleSuspended(r)}
                     className={r.status === 'active' ? 'btn-danger-admin' : 'btn-outline-admin'}
@@ -117,7 +153,7 @@ export default function PhotographersSection() {
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td className="p-4 text-center" colSpan={7} style={{ color: 'var(--warm-gray)' }}>
+                <td className="p-4 text-center" colSpan={8} style={{ color: 'var(--warm-gray)' }}>
                   No photographers found.
                 </td>
               </tr>

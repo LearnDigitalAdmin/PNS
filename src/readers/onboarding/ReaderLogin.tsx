@@ -5,7 +5,7 @@ import { useReaderAuth } from '../context/ReaderAuthContext';
 const PHONE_RECAPTCHA_ID = 'reader-phone-recaptcha-container';
 
 export default function ReaderLogin() {
-  const { signInWithGoogle, requestPhoneCode, confirmPhoneCode, step, authError } = useReaderAuth();
+  const { signInWithGoogle, requestPhoneCode, confirmPhoneCode, step, authError, crossAccountConflict } = useReaderAuth();
   const [mode, setMode] = useState<'choose' | 'phone-entry' | 'phone-otp'>('choose');
   const [phone, setPhone] = useState('');
   const [otp, setOtp] = useState('');
@@ -92,7 +92,17 @@ export default function ReaderLogin() {
           </div>
         )}
 
-        {authError && <p className="text-sm text-red-600 text-center">{authError}</p>}
+        {authError && (
+          <p className="text-sm text-red-600 text-center">
+            {authError}
+            {crossAccountConflict && (
+              <>
+                {' '}
+                <Link to="/partners" className="underline">Go to photographer portal →</Link>
+              </>
+            )}
+          </p>
+        )}
 
         <p className="text-center text-xs text-gray-500">
           <Link to="/" style={{ color: 'rgba(201,168,76,.75)' }}>← Back to P&amp;S Magazine</Link>

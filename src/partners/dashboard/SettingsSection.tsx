@@ -1,8 +1,10 @@
 import { useState } from 'react';
+import { doc, updateDoc } from 'firebase/firestore';
 import { usePhotographerAuth } from '../context/PhotographerAuthContext';
 import { useNavigate } from 'react-router-dom';
 import { httpsCallable } from 'firebase/functions';
-import { functions } from '../../lib/firebase';
+import { db, functions } from '../../lib/firebase';
+import type { PaymentPolicy } from '../types';
 
 const createSubaccountFn = httpsCallable<
   { businessName: string; bankCode: string; accountNumber: string },
@@ -81,6 +83,61 @@ function PayoutSetup() {
   );
 }
 
+function PaymentPolicySetting() {
+  const { currentUser, profile } = usePhotographerAuth();
+  const [saving, setSaving] = useState(false);
+  if (!currentUser || !profile) return null;
+
+  const current: PaymentPolicy = profile.paymentPolicy ?? 'pay_on_booking';
+
+  const choose = async (policy: PaymentPolicy) => {
+    if (policy === 'pay_later' || policy === current || saving) return; // pay_later disabled for now
+    setSaving(true);
+    try {
+      await updateDoc(doc(db, 'photographers', currentUser.uid), { paymentPolicy: policy });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="border rounded-lg p-4 space-y-3">
+      <div>
+        <p className="text-sm font-medium">Payment collection</p>
+        <p className="text-xs text-gray-500 mt-0.5">
+          How clients pay for a booking once you accept it. Prices are fixed per service in your Profile — clients
+          always know the exact amount before they book.
+        </p>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => choose('pay_on_booking')}
+        className={`w-full text-left border rounded-lg p-3 ${current === 'pay_on_booking' ? 'border-black bg-gray-50' : 'border-gray-200'}`}
+      >
+        <p className="text-sm font-medium flex items-center gap-2">
+          Pay on booking (M-Pesa)
+          {current === 'pay_on_booking' && <span className="text-xs text-green-600">✓ Active</span>}
+        </p>
+        <p className="text-xs text-gray-500 mt-0.5">
+          Once you accept a request, the client is prompted to pay the fixed service price by M-Pesa before the
+          booking is confirmed.
+        </p>
+      </button>
+
+      <div className="w-full text-left border rounded-lg p-3 border-gray-200 opacity-50 cursor-not-allowed">
+        <p className="text-sm font-medium flex items-center gap-2">
+          Pay later
+          <span className="text-xs bg-gray-200 text-gray-600 rounded px-1.5 py-0.5">Coming soon</span>
+        </p>
+        <p className="text-xs text-gray-500 mt-0.5">
+          Accept a booking without collecting payment upfront and settle with the client directly. Not available yet.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function SettingsSection() {
   const { currentUser, profile, logout } = usePhotographerAuth();
   const navigate = useNavigate();
@@ -114,6 +171,7 @@ export default function SettingsSection() {
         </p>
       </div>
 
+      <PaymentPolicySetting />
       <PayoutSetup />
 
       {profile.status === 'suspended' && (

@@ -6,7 +6,7 @@ const ITEMS: { label: string; page: number }[] = [
   { label: 'Home', page: 0 },
   { label: 'Stories', page: 1 },
   { label: 'Voting Arena', page: 2 },
-  { label: 'Cogvana Visuals', page: 3 },
+  { label: 'Directory', page: 3 },
   { label: 'Services', page: 4 },
   { label: 'Partners', page: 5 },
   { label: 'Sponsored', page: 6 },

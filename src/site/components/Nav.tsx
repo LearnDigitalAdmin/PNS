@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import { useSite } from '../context/SiteContext';
 import { useReaderAuth } from '../../readers/context/ReaderAuthContext';
 
-const NAV_LINKS = ['Stories', 'Voting', 'Cogvana', 'Services', 'Partners', 'Sponsored', 'Shop', 'Book'];
+const NAV_LINKS = ['Stories', 'Voting', 'Directory', 'Services', 'Partners', 'Sponsored', 'Shop', 'Book'];
 
 export default function Nav() {
   const { goToPage, toggleMobileMenu, mobileMenuOpen, openModal, siteSettings } = useSite();

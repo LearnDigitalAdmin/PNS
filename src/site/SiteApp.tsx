@@ -18,8 +18,14 @@ import BookFooterPage from './pages/BookFooterPage';
 import StoryModal, { SharedLinkOverlay } from './components/StoryModal';
 
 const PAGE_COMPONENTS = [HeroPage, StoriesPage, VotingPage, CogvanaPage, ServicesPage, PartnersPage, SponsoredPage, ShopPage, BookFooterPage];
-const PAGE_BG = ['transparent', 'var(--warm-white)', 'var(--black)', 'var(--warm-white)', 'var(--black)', 'var(--warm-white)', 'var(--black)', 'var(--warm-white)', 'var(--warm-white)'];
-const PAGE_LABELS = ['', 'Stories', 'Voting', 'Cogvana', 'Services', 'Partners', 'Sponsored', 'Shop', 'Book'];
+// NOTE: index 3 (the photographer directory) is intentionally dark, not
+// alternating with its neighbours — CogvanaPage.tsx's cards/text (business
+// name, service titles) are styled in warm-white/gold/white assuming a dark
+// backdrop. It used to sit on a light background here, which made that text
+// render white-on-near-white and unreadable. Keep this in sync with
+// CogvanaPage's own color choices if that page's palette ever changes.
+const PAGE_BG = ['transparent', 'var(--warm-white)', 'var(--black)', 'var(--black)', 'var(--black)', 'var(--warm-white)', 'var(--black)', 'var(--warm-white)', 'var(--warm-white)'];
+const PAGE_LABELS = ['', 'Stories', 'Voting', 'Directory', 'Services', 'Partners', 'Sponsored', 'Shop', 'Book'];
 
 function triggerReveal(page: HTMLDivElement | null) {
   if (!page) return;

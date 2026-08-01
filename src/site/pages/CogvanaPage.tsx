@@ -90,11 +90,27 @@ function DirectoryView({ onSelect }: { onSelect: (id: string) => void }) {
               onClick={() => onSelect(p.id)}
               style={{ background: 'rgba(255,255,255,.04)', border: '1px solid rgba(201,168,76,.15)', borderRadius: 8, padding: '1rem', cursor: 'pointer' }}
             >
-              <p style={{ fontFamily: "'Playfair Display',serif", fontSize: '1rem', fontWeight: 700, color: '#fff' }}>
-                {p.businessName}
-                {p.verified && <span style={{ color: 'var(--gold)', fontSize: '.7rem', marginLeft: 6 }}>✓ Verified</span>}
-              </p>
-              <p style={{ fontSize: '.68rem', color: 'var(--warm-gray)', marginTop: 2 }}>{p.county}</p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div
+                  style={{
+                    width: 40, height: 40, borderRadius: '50%', flexShrink: 0, overflow: 'hidden',
+                    background: 'rgba(201,168,76,.15)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}
+                >
+                  {p.coverImageUrl ? (
+                    <img src={p.coverImageUrl} alt={p.businessName} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  ) : (
+                    <span style={{ color: 'var(--gold)', fontSize: '.85rem', fontWeight: 700 }}>
+                      {p.businessName?.[0]?.toUpperCase() ?? '?'}
+                    </span>
+                  )}
+                </div>
+                <p style={{ fontFamily: "'Playfair Display',serif", fontSize: '1rem', fontWeight: 700, color: '#fff' }}>
+                  {p.businessName}
+                  {p.verified && <span style={{ color: 'var(--gold)', fontSize: '.7rem', marginLeft: 6 }}>✓ Verified</span>}
+                </p>
+              </div>
+              <p style={{ fontSize: '.68rem', color: 'var(--warm-gray)', marginTop: 6 }}>{p.county}</p>
               <p style={{ fontSize: '.62rem', color: 'var(--gold)', marginTop: 6 }}>{p.categories?.join(' · ')}</p>
               <p style={{ fontSize: '.62rem', color: 'var(--warm-gray)', marginTop: 6 }}>♥ {p.likesCount ?? 0}</p>
             </div>
@@ -109,7 +125,7 @@ function PortfolioView({ photographerId, onBack }: { photographerId: string; onB
   const { profile, images, loading } = usePhotographerPortfolio(photographerId);
   const { openLightbox } = useSite();
   const liked = useHasLiked(photographerId);
-  const [showReport, setShowReport] = useState<{ type: 'photographer' | 'galleryImage'; id: string } | null>(null);
+  const [showReport, setShowReport] = useState<{ type: 'photographer' | 'galleryImage'; id: string; imageUrl?: string | null } | null>(null);
   const [showBooking, setShowBooking] = useState(false);
 
   if (loading || !profile) {
@@ -130,14 +146,30 @@ function PortfolioView({ photographerId, onBack }: { photographerId: string; onB
       </button>
 
       <div className="reveal flex items-start justify-between flex-wrap gap-4 mb-6">
-        <div>
-          <h2 className="section-title" style={{ color: 'var(--warm-white)' }}>
-            {profile.businessName}
-            {profile.verified && <span style={{ color: 'var(--gold)', fontSize: '.7rem', marginLeft: 8 }}>✓ Verified</span>}
-          </h2>
-          <p style={{ fontSize: '.72rem', color: 'var(--warm-gray)', marginTop: 4 }}>{profile.county}</p>
-          <p style={{ fontSize: '.62rem', color: 'var(--gold)', marginTop: 6 }}>{profile.categories?.join(' · ')}</p>
-          <p style={{ fontSize: '.78rem', color: 'var(--warm-white)', marginTop: 10, maxWidth: 480 }}>{profile.bio}</p>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+          <div
+            style={{
+              width: 72, height: 72, borderRadius: '50%', flexShrink: 0, overflow: 'hidden',
+              background: 'rgba(201,168,76,.15)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            {profile.coverImageUrl ? (
+              <img src={profile.coverImageUrl} alt={profile.businessName} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            ) : (
+              <span style={{ color: 'var(--gold)', fontSize: '1.6rem', fontWeight: 700 }}>
+                {profile.businessName?.[0]?.toUpperCase() ?? '?'}
+              </span>
+            )}
+          </div>
+          <div>
+            <h2 className="section-title" style={{ color: 'var(--warm-white)' }}>
+              {profile.businessName}
+              {profile.verified && <span style={{ color: 'var(--gold)', fontSize: '.7rem', marginLeft: 8 }}>✓ Verified</span>}
+            </h2>
+            <p style={{ fontSize: '.72rem', color: 'var(--warm-gray)', marginTop: 4 }}>{profile.county}</p>
+            <p style={{ fontSize: '.62rem', color: 'var(--gold)', marginTop: 6 }}>{profile.categories?.join(' · ')}</p>
+            <p style={{ fontSize: '.78rem', color: 'var(--warm-white)', marginTop: 10, maxWidth: 480 }}>{profile.bio}</p>
+          </div>
         </div>
         <div className="flex flex-col items-end gap-2">
           <button
@@ -155,7 +187,7 @@ function PortfolioView({ photographerId, onBack }: { photographerId: string; onB
           <a href={`tel:${profile.phone}`} className="text-xs" style={{ color: 'var(--warm-gray)' }}>
             {profile.phone}
           </a>
-          <button onClick={() => setShowReport({ type: 'photographer', id: photographerId })} className="text-[.65rem]" style={{ color: 'var(--warm-gray)' }}>
+          <button onClick={() => setShowReport({ type: 'photographer', id: photographerId, imageUrl: profile.coverImageUrl })} className="text-[.65rem]" style={{ color: 'var(--warm-gray)' }}>
             Report profile
           </button>
         </div>
@@ -197,7 +229,7 @@ function PortfolioView({ photographerId, onBack }: { photographerId: string; onB
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  setShowReport({ type: 'galleryImage', id: img.id });
+                  setShowReport({ type: 'galleryImage', id: img.id, imageUrl: img.imageUrl });
                 }}
                 style={{ position: 'absolute', bottom: 4, right: 4, fontSize: '.55rem', color: 'rgba(255,255,255,.7)', background: 'rgba(0,0,0,.4)', borderRadius: 4, padding: '2px 5px' }}
               >
@@ -213,6 +245,7 @@ function PortfolioView({ photographerId, onBack }: { photographerId: string; onB
           targetType={showReport.type}
           targetId={showReport.id}
           photographerId={photographerId}
+          imageUrl={showReport.imageUrl}
           onClose={() => setShowReport(null)}
         />
       )}

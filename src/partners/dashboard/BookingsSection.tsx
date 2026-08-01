@@ -29,24 +29,47 @@ const STATUS_COLOR: Record<BookingStatus, string> = {
 
 function BookingRow({ booking, payoutReady }: { booking: Booking; payoutReady: boolean }) {
   const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const accept = async () => {
-    if (!payoutReady || !booking.amount || booking.amount <= 0) return; // belt-and-suspenders — button is already disabled in this case
+    if (!payoutReady || !booking.amount || booking.amount <= 0 || busy) return; // belt-and-suspenders — button is already disabled in this case
     setBusy(true);
+    setActionError(null);
     try {
       await updateDoc(doc(db, 'bookings', booking.id), {
         status: 'accepted',
         updatedAt: serverTimestamp(),
       });
+    } catch (err: any) {
+      // Was previously swallowed by a bare try/finally, which surfaced as an
+      // uncaught "Missing or insufficient permissions" in the console with
+      // no way for the photographer (or us, debugging) to see why. Logging
+      // err.code here is what actually tells permission-denied apart from
+      // e.g. unavailable/network issues.
+      console.error('Accept booking failed:', err.code, err.message);
+      setActionError(
+        err.code === 'permission-denied'
+          ? "Couldn't accept this booking — your account may not have permission yet. Try refreshing, and if it persists, contact support."
+          : 'Something went wrong accepting this booking. Please try again.'
+      );
     } finally {
       setBusy(false);
     }
   };
 
   const decline = async () => {
+    if (busy) return;
     setBusy(true);
+    setActionError(null);
     try {
       await updateDoc(doc(db, 'bookings', booking.id), { status: 'declined', updatedAt: serverTimestamp() });
+    } catch (err: any) {
+      console.error('Decline booking failed:', err.code, err.message);
+      setActionError(
+        err.code === 'permission-denied'
+          ? "Couldn't decline this booking — your account may not have permission yet. Try refreshing, and if it persists, contact support."
+          : 'Something went wrong declining this booking. Please try again.'
+      );
     } finally {
       setBusy(false);
     }
@@ -92,6 +115,7 @@ function BookingRow({ booking, payoutReady }: { booking: Booking; payoutReady: b
               <Link to="../settings" className="underline">Connect a payout account</Link> before you can accept this.
             </p>
           )}
+          {actionError && <p className="text-xs text-red-600">{actionError}</p>}
         </div>
       )}
     </div>

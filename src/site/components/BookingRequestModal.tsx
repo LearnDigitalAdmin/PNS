@@ -10,11 +10,13 @@ export default function BookingRequestModal({
   photographerId,
   photographerBusinessName,
   services,
+  initialServiceName,
   onClose,
 }: {
   photographerId: string;
   photographerBusinessName: string;
   services: PhotographerService[];
+  initialServiceName?: string | null;
   onClose: () => void;
 }) {
   const { currentUser: reader, profile: readerProfile } = useReaderAuth();
@@ -22,7 +24,10 @@ export default function BookingRequestModal({
   // amount is fixed at request time and never edited afterwards, so an
   // unpriced service has nothing to charge.
   const bookableServices = services.filter((s) => s.priceFrom >= MIN_BOOKING_FEE_KES);
-  const [serviceName, setServiceName] = useState(bookableServices[0]?.name ?? '');
+  const initialBookable = initialServiceName && bookableServices.some((s) => s.name === initialServiceName)
+    ? initialServiceName
+    : bookableServices[0]?.name ?? '';
+  const [serviceName, setServiceName] = useState(initialBookable);
   const selectedService = bookableServices.find((s) => s.name === serviceName) ?? null;
   const [proposedDate, setProposedDate] = useState('');
   const [notes, setNotes] = useState('');

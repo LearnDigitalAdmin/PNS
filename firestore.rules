@@ -52,8 +52,14 @@ service cloud.firestore {
     }
 
     // ── Sponsored deals pipeline ───────────────────────────────────────────
+    // Public site only ever queries `where('published', '==', true)` (see
+    // subscribeToPublishedSponsoredStories) — so a per-doc published check
+    // here lets that query succeed while still hiding inquiry/production
+    // stage deals from anyone but admins. Do not change this to a blanket
+    // `if true`, since draft deals contain unpublished business terms.
     match /sponsoredDeals/{dealId} {
-      allow read, write: if isAdmin();
+      allow read: if isAdmin() || resource.data.published == true;
+      allow write: if isAdmin();
     }
 
     // ── Gallery (site's own editorial gallery) ─────────────────────────────
@@ -62,10 +68,38 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // ── Homepage services marquee ───────────────────────────────────────────
+    match /services/{serviceId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ── Testimonials ────────────────────────────────────────────────────────
+    match /testimonials/{testimonialId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
     // ── Products / shop ─────────────────────────────────────────────────
     match /products/{productId} {
       allow read: if true;
       allow write: if isAdmin();
+    }
+
+    // ── Newsletter signups (public write-only form) ─────────────────────────
+    match /newsletter/{entryId} {
+      allow create: if request.resource.data.keys().hasAll(['email', 'createdAt']);
+      allow read, update, delete: if isAdmin();
+    }
+
+    // ── Shop orders (cart checkout capture — no payment gateway wired up
+    //    yet, see createOrder in firebaseContent.ts) ────────────────────────
+    // Anonymous checkout, so no auth check — just shape-validated so junk
+    // can't land and a client can't fabricate a paid/fulfilled status.
+    match /orders/{orderId} {
+      allow create: if request.resource.data.keys().hasAll(['items', 'total', 'status', 'createdAt'])
+                    && request.resource.data.status == 'pending_payment';
+      allow read, update, delete: if isAdmin();
     }
 
     // ── Voting categories ───────────────────────────────────────────────

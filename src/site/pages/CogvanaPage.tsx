@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSite } from '../context/SiteContext';
 import { usePhotographerDirectory, usePhotographerPortfolio, toggleLike, useHasLiked } from '../hooks/usePhotographerDirectory';
 import ProtectedImage from '../components/ProtectedImage';
 import ReportModal from '../components/ReportModal';
 import BookingRequestModal from '../components/BookingRequestModal';
 import { PHOTOGRAPHER_CATEGORIES } from '../../partners/types';
+import { MIN_BOOKING_FEE_KES } from '../../bookings/types';
 
 // This page used to be a single admin-curated "Cogvana Visuals" gallery.
 // It's now the photographer marketplace: browse/search photographers here,
@@ -24,6 +25,19 @@ function DirectoryView({ onSelect }: { onSelect: (id: string) => void }) {
   const { photographers, loading } = usePhotographerDirectory();
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // The book-flip page-transition engine in SiteApp only calls triggerReveal()
+  // when the currentPage index actually changes. Navigating Directory ->
+  // Portfolio -> Directory happens entirely inside this component's own
+  // selectedId state, so the page index never moves and that reveal never
+  // re-fires — this remount's .reveal elements (header, search, filters)
+  // would otherwise sit at their pre-reveal opacity:0 forever. Reveal them
+  // ourselves on mount instead of depending on the page-transition engine.
+  useEffect(() => {
+    const els = rootRef.current?.querySelectorAll('.reveal:not(.visible)');
+    els?.forEach((el, i) => setTimeout(() => el.classList.add('visible'), i * 55));
+  }, []);
 
   const filtered = useMemo(() => {
     return photographers.filter((p) => {
@@ -38,7 +52,7 @@ function DirectoryView({ onSelect }: { onSelect: (id: string) => void }) {
   }, [photographers, search, category]);
 
   return (
-    <div className="px-5 md:px-10 py-7 max-w-7xl mx-auto">
+    <div ref={rootRef} className="px-5 md:px-10 py-7 max-w-7xl mx-auto">
       <div className="reveal flex items-end justify-between mb-7 flex-wrap gap-4">
         <div>
           <p className="section-eyebrow mb-1">Find A Photographer</p>
@@ -66,9 +80,16 @@ function DirectoryView({ onSelect }: { onSelect: (id: string) => void }) {
           className="text-xs px-3 py-2 rounded"
           style={{ background: 'rgba(255,255,255,.06)', border: '1px solid rgba(201,168,76,.25)', color: 'var(--warm-white)' }}
         >
-          <option value="">All categories</option>
+          {/* Explicit background+color on <option>: the select's own
+              translucent-dark background doesn't carry into the browser's
+              native dropdown popup, so without this the popup rendered its
+              default white background with our inherited light text —
+              unreadable white-on-white. */}
+          <option value="" style={{ background: '#1a1a1a', color: '#fff' }}>
+            All categories
+          </option>
           {PHOTOGRAPHER_CATEGORIES.map((c) => (
-            <option key={c} value={c}>
+            <option key={c} value={c} style={{ background: '#1a1a1a', color: '#fff' }}>
               {c}
             </option>
           ))}
@@ -127,6 +148,7 @@ function PortfolioView({ photographerId, onBack }: { photographerId: string; onB
   const liked = useHasLiked(photographerId);
   const [showReport, setShowReport] = useState<{ type: 'photographer' | 'galleryImage'; id: string; imageUrl?: string | null } | null>(null);
   const [showBooking, setShowBooking] = useState(false);
+  const [bookingServiceName, setBookingServiceName] = useState<string | null>(null);
 
   if (loading || !profile) {
     return (
@@ -181,7 +203,14 @@ function PortfolioView({ photographerId, onBack }: { photographerId: string; onB
           >
             {liked ? '♥ Liked' : '♡ Like'} ({profile.likesCount ?? 0})
           </button>
-          <button onClick={() => setShowBooking(true)} className="btn-outline-gold text-xs" style={{ padding: '.5rem 1rem' }}>
+          <button
+            onClick={() => {
+              setBookingServiceName(null);
+              setShowBooking(true);
+            }}
+            className="btn-outline-gold text-xs"
+            style={{ padding: '.5rem 1rem' }}
+          >
             Book this photographer
           </button>
           <a href={`tel:${profile.phone}`} className="text-xs" style={{ color: 'var(--warm-gray)' }}>
@@ -198,19 +227,49 @@ function PortfolioView({ photographerId, onBack }: { photographerId: string; onB
           photographerId={photographerId}
           photographerBusinessName={profile.businessName}
           services={profile.services ?? []}
-          onClose={() => setShowBooking(false)}
+          initialServiceName={bookingServiceName}
+          onClose={() => {
+            setShowBooking(false);
+            setBookingServiceName(null);
+          }}
         />
       )}
 
       {profile.services?.length > 0 && (
         <div className="mb-6 flex flex-wrap gap-3">
-          {profile.services.map((s, i) => (
-            <div key={i} style={{ border: '1px solid rgba(201,168,76,.2)', borderRadius: 8, padding: '.6rem .9rem' }}>
-              <p style={{ fontSize: '.75rem', color: '#fff', fontWeight: 600 }}>{s.name}</p>
-              <p style={{ fontSize: '.65rem', color: 'var(--warm-gray)' }}>{s.description}</p>
-              {s.priceFrom > 0 && <p style={{ fontSize: '.65rem', color: 'var(--gold)' }}>From KSh {s.priceFrom.toLocaleString()}</p>}
-            </div>
-          ))}
+          {profile.services.map((s, i) => {
+            // Only services the photographer has actually priced above the
+            // platform minimum are bookable — mirrors the same filter
+            // BookingRequestModal applies. Clicking an unbookable service
+            // still opens the modal (it explains why nothing's bookable
+            // yet) rather than doing nothing.
+            const bookable = s.priceFrom >= MIN_BOOKING_FEE_KES;
+            return (
+              <div
+                key={i}
+                onClick={() => {
+                  setBookingServiceName(bookable ? s.name : null);
+                  setShowBooking(true);
+                }}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    setBookingServiceName(bookable ? s.name : null);
+                    setShowBooking(true);
+                  }
+                }}
+                style={{ border: '1px solid rgba(201,168,76,.2)', borderRadius: 8, padding: '.6rem .9rem', cursor: 'pointer' }}
+              >
+                <p style={{ fontSize: '.75rem', color: '#fff', fontWeight: 600 }}>{s.name}</p>
+                <p style={{ fontSize: '.65rem', color: 'var(--warm-gray)' }}>{s.description}</p>
+                {s.priceFrom > 0 && <p style={{ fontSize: '.65rem', color: 'var(--gold)' }}>From KSh {s.priceFrom.toLocaleString()}</p>}
+                <p style={{ fontSize: '.6rem', color: 'var(--gold)', marginTop: 4, textDecoration: 'underline' }}>
+                  {bookable ? 'Book this service' : 'Contact for pricing'}
+                </p>
+              </div>
+            );
+          })}
         </div>
       )}
 

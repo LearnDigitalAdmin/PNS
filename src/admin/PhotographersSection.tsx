@@ -1,8 +1,22 @@
 import { useEffect, useState } from 'react';
 import { collection, doc, onSnapshot, orderBy, query, updateDoc } from 'firebase/firestore';
 import { ref, deleteObject } from 'firebase/storage';
-import { db, storage } from '../lib/firebase';
+import { httpsCallable } from 'firebase/functions';
+import { db, storage, functions } from '../lib/firebase';
 import { useAdminData } from './context/AdminDataContext';
+
+const suspendPhotographerFn = httpsCallable<{ photographerId: string }, { ok: true }>(
+  functions,
+  'suspendPhotographer'
+);
+const reactivatePhotographerFn = httpsCallable<{ photographerId: string }, { ok: true }>(
+  functions,
+  'reactivatePhotographer'
+);
+const expelPhotographerFn = httpsCallable<{ photographerId: string }, { ok: true }>(
+  functions,
+  'expelPhotographer'
+);
 
 interface Row {
   id: string;
@@ -60,15 +74,33 @@ export default function PhotographersSection() {
   };
 
   const toggleSuspended = (row: Row) => {
-    const next = row.status === 'active' ? 'suspended' : 'active';
+    const suspending = row.status === 'active';
     openConfirm(
-      next === 'suspended' ? 'Suspend this photographer?' : 'Reactivate this photographer?',
-      next === 'suspended'
-        ? `${row.businessName} will be hidden from the public directory immediately.`
-        : `${row.businessName} will become visible on the public directory again.`,
+      suspending ? 'Suspend this photographer?' : 'Reactivate this photographer?',
+      suspending
+        ? `${row.businessName} will be hidden from the public directory and unable to sign in. Their stored data (profile, gallery, sessions) is not touched.`
+        : `${row.businessName} will become visible on the public directory again and be able to sign in.`,
       async () => {
-        await updateDoc(doc(db, 'photographers', row.id), { status: next });
-        showToast(next === 'suspended' ? 'Photographer suspended' : 'Photographer reactivated', next === 'suspended' ? 'danger' : 'success');
+        // Suspend/reactivate now also flips the photographer's Firebase
+        // Auth `disabled` flag, not just the Firestore status field, so
+        // this has to go through a callable — see functions/src/moderation.ts.
+        if (suspending) {
+          await suspendPhotographerFn({ photographerId: row.id });
+        } else {
+          await reactivatePhotographerFn({ photographerId: row.id });
+        }
+        showToast(suspending ? 'Photographer suspended' : 'Photographer reactivated', suspending ? 'danger' : 'success');
+      }
+    );
+  };
+
+  const expelPhotographer = (row: Row) => {
+    openConfirm(
+      `Expel ${row.businessName || 'this photographer'}? This cannot be undone.`,
+      'This permanently deletes their profile, gallery, and session data, and disables their account. Past bookings and reader records are not affected.',
+      async () => {
+        await expelPhotographerFn({ photographerId: row.id });
+        showToast('Photographer expelled', 'danger');
       }
     );
   };
@@ -147,6 +179,13 @@ export default function PhotographersSection() {
                     style={{ fontSize: '.68rem', padding: '.3rem .6rem' }}
                   >
                     {r.status === 'active' ? 'Suspend' : 'Reactivate'}
+                  </button>
+                  <button
+                    onClick={() => expelPhotographer(r)}
+                    className="btn-danger-admin"
+                    style={{ fontSize: '.68rem', padding: '.3rem .6rem' }}
+                  >
+                    Expel
                   </button>
                 </td>
               </tr>

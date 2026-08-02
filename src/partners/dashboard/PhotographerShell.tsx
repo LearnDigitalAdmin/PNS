@@ -7,6 +7,7 @@ const TABS = [
   { to: 'gallery', label: 'Gallery' },
   { to: 'sessions', label: 'Sessions' },
   { to: 'bookings', label: 'Bookings' },
+  { to: 'income', label: 'Income' },
   { to: 'settings', label: 'Settings' },
 ];
 

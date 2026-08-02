@@ -61,6 +61,11 @@ export interface PhotographerProfile {
   payoutBankCode?: string;
   payoutAccountNumber?: string;
   payoutSetupComplete: boolean;
+  // Safaricom number the shared project's paystackCallback webhook SMSes on
+  // a successful booking payment (via HostPinnacle). Stored as "SMSPhone" —
+  // matching the Firestore field name the webhook reads directly — rather
+  // than camelCase, so the two stay obviously in sync across repos.
+  SMSPhone?: string;
   createdAt: Timestamp;
 }
 
@@ -152,10 +157,13 @@ export function matchCameraNumberToEntry(
 // ── Reports (trust-first moderation) ─────────────────────────────────────
 export interface Report {
   id: string;
-  targetType: 'photographer' | 'galleryImage';
+  targetType: 'photographer' | 'galleryImage' | 'booking';
   targetId: string;
   photographerId: string; // owning photographer, for admin triage grouping
-  reporterUserId: string | null; // null = anonymous report
+  // Set for targetType 'booking' so the admin queue can jump straight to
+  // the booking record without a photographer-doc lookup.
+  bookingId?: string;
+  reporterUserId: string | null; // null = anonymous report (booking reports always set this — see firestore.rules)
   reason: string;
   status: 'open' | 'reviewed' | 'actioned';
   createdAt: Timestamp;
@@ -167,5 +175,15 @@ export const REPORT_REASONS = [
   'Copyright / not their work',
   'Misleading profile',
   'Spam',
+  'Other',
+] as const;
+
+// Reasons a reader can report a PAID booking. Kept distinct from
+// REPORT_REASONS above since a booking problem is about service delivery,
+// not directory/profile content moderation.
+export const BOOKING_REPORT_REASONS = [
+  'Not fulfilled',
+  'Not as agreed / poor quality',
+  'Photographer unresponsive',
   'Other',
 ] as const;

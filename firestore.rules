@@ -150,6 +150,14 @@ service cloud.firestore {
                       request.resource.data.status == resource.data.status
                     );
 
+      // Full delete (Firestore doc + subcollections, called "expel") and
+      // suspend/reactivate all go through the suspendPhotographer /
+      // reactivatePhotographer / expelPhotographer callables (Admin SDK),
+      // not a client update/delete — they also disable/re-enable the
+      // photographer's Firebase Auth account, which no Firestore rule can
+      // reach. Those callables do their own isAdmin()-equivalent check
+      // server-side; this delete rule just covers any other admin-side
+      // Firestore write path (e.g. the console).
       allow delete: if isAdmin();
 
       // Public portfolio images. imageUrl/thumbUrl are watermarked copies
@@ -256,6 +264,18 @@ service cloud.firestore {
                       request.resource.data.status == 'accepted' &&
                       request.resource.data.amount == resource.data.amount &&
                       get(/databases/$(database)/documents/photographers/$(request.auth.uid)).data.payoutSetupComplete == true
+                    )
+                    // Fulfillment: the assigned photographer may mark their
+                    // own PAID booking fulfilled (reuses the existing
+                    // 'completed' status value — see BookingStatus in
+                    // src/bookings/types.ts). Nothing else about the
+                    // booking may change in this transition.
+                    || (
+                      isSignedIn() && request.auth.uid == resource.data.photographerId &&
+                      resource.data.status == 'paid' &&
+                      request.resource.data.status == 'completed' &&
+                      request.resource.data.amount == resource.data.amount &&
+                      request.resource.data.readerId == resource.data.readerId
                     );
 
       allow delete: if isAdmin();
@@ -274,11 +294,24 @@ service cloud.firestore {
     // Anyone (including anonymous) can file a report; only admins can read
     // or triage the queue. Shape-validated so junk/garbage writes can't land.
     match /reports/{reportId} {
+      // Profile/photo reports stay anonymous-allowed (public directory has
+      // no reader auth requirement). Booking reports are filed from a
+      // signed-in reader's own dashboard, so those must carry a real
+      // reporterUserId — no anonymous booking reports.
       allow create: if request.resource.data.keys().hasAll(
                         ['targetType', 'targetId', 'photographerId', 'reason', 'status', 'createdAt']
                       )
                     && request.resource.data.status == 'open'
-                    && request.resource.data.targetType in ['photographer', 'galleryImage'];
+                    && (
+                      (
+                        request.resource.data.targetType in ['photographer', 'galleryImage']
+                      )
+                      || (
+                        request.resource.data.targetType == 'booking' &&
+                        isSignedIn() &&
+                        request.resource.data.reporterUserId == request.auth.uid
+                      )
+                    );
       allow read, update, delete: if isAdmin();
     }
   }

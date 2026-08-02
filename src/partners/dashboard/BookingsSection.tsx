@@ -75,6 +75,29 @@ function BookingRow({ booking, payoutReady }: { booking: Booking; payoutReady: b
     }
   };
 
+  // Fulfillment state: a paid booking starts "open" (status stays 'paid')
+  // until the photographer marks it done — this just reuses the existing
+  // 'completed' status value rather than adding a parallel field. See the
+  // firestore.rules update allowing this specific paid -> completed
+  // transition for the assigned photographer.
+  const markFulfilled = async () => {
+    if (busy) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      await updateDoc(doc(db, 'bookings', booking.id), { status: 'completed', updatedAt: serverTimestamp() });
+    } catch (err: any) {
+      console.error('Mark fulfilled failed:', err.code, err.message);
+      setActionError(
+        err.code === 'permission-denied'
+          ? "Couldn't update this booking — your account may not have permission yet. Try refreshing, and if it persists, contact support."
+          : 'Something went wrong updating this booking. Please try again.'
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="border rounded-lg p-4 space-y-2">
       <div className="flex items-center justify-between">
@@ -115,6 +138,19 @@ function BookingRow({ booking, payoutReady }: { booking: Booking; payoutReady: b
               <Link to="../settings" className="underline">Connect a payout account</Link> before you can accept this.
             </p>
           )}
+          {actionError && <p className="text-xs text-red-600">{actionError}</p>}
+        </div>
+      )}
+
+      {booking.status === 'paid' && (
+        <div className="space-y-1.5 pt-1">
+          <button
+            onClick={markFulfilled}
+            disabled={busy}
+            className="bg-black text-white text-xs rounded px-3 py-1.5 disabled:opacity-50"
+          >
+            {busy ? 'Updating…' : 'Mark fulfilled'}
+          </button>
           {actionError && <p className="text-xs text-red-600">{actionError}</p>}
         </div>
       )}

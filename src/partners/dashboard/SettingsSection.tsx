@@ -83,6 +83,60 @@ function PayoutSetup() {
   );
 }
 
+function NotificationsSetup() {
+  const { currentUser, profile } = usePhotographerAuth();
+  const [phone, setPhone] = useState(profile?.SMSPhone ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  if (!currentUser || !profile) return null;
+
+  const save = async () => {
+    setError(null);
+    setDone(false);
+    const trimmed = phone.trim();
+    // Light shape check only — the webhook's own normalizeSmsPhone() is the
+    // real source of truth for what counts as a valid Kenyan number.
+    if (!/^(\+?254|0)?[71]\d{8}$/.test(trimmed.replace(/[\s-]/g, ''))) {
+      setError('Enter a valid Safaricom number, e.g. 07XXXXXXXX or +2547XXXXXXXX.');
+      return;
+    }
+    setSaving(true);
+    try {
+      await updateDoc(doc(db, 'photographers', currentUser.uid), { SMSPhone: trimmed });
+      setDone(true);
+    } catch (err: any) {
+      setError(err.message ?? 'Could not save this number. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="border rounded-lg p-4 space-y-3">
+      <div>
+        <p className="text-sm font-medium">Payment notifications</p>
+        <p className="text-xs text-gray-500 mt-0.5">
+          We'll text this Safaricom number a short summary — amount paid, platform fee, your net, and expected
+          payout day — every time a booking is paid for.
+        </p>
+      </div>
+      <input
+        placeholder="07XXXXXXXX"
+        value={phone}
+        onChange={(e) => setPhone(e.target.value)}
+        className="w-full border rounded px-3 py-2 text-sm"
+      />
+      {error && <p className="text-xs text-red-600">{error}</p>}
+      {done && <p className="text-xs text-green-600">Notifications number saved.</p>}
+      <button onClick={save} disabled={saving} className="bg-black text-white text-sm rounded px-4 py-2 disabled:opacity-50">
+        {saving ? 'Saving…' : profile.SMSPhone ? 'Update number' : 'Save number'}
+      </button>
+    </div>
+  );
+}
+
 function PaymentPolicySetting() {
   const { currentUser, profile } = usePhotographerAuth();
   const [saving, setSaving] = useState(false);
@@ -173,6 +227,7 @@ export default function SettingsSection() {
 
       <PaymentPolicySetting />
       <PayoutSetup />
+      <NotificationsSetup />
 
       {profile.status === 'suspended' && (
         <div className="border border-red-200 bg-red-50 rounded-lg p-4 text-sm text-red-700">

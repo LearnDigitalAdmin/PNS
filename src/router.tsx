@@ -17,6 +17,7 @@ import PartnersGallerySection from './partners/dashboard/GallerySection';
 import PartnersSessionsSection from './partners/dashboard/SessionsSection';
 import PartnersSessionDetail from './partners/dashboard/SessionDetail';
 import PartnersBookingsSection from './partners/dashboard/BookingsSection';
+import PartnersIncomeSection from './partners/dashboard/IncomeSection';
 import PartnersSettingsSection from './partners/dashboard/SettingsSection';
 import ReadersApp from './readers/ReadersApp';
 import ReaderOverviewSection from './readers/dashboard/OverviewSection';
@@ -72,6 +73,7 @@ export const router = createBrowserRouter([
       { path: 'sessions', element: <PartnersSessionsSection /> },
       { path: 'sessions/:sessionId', element: <PartnersSessionDetail /> },
       { path: 'bookings', element: <PartnersBookingsSection /> },
+      { path: 'income', element: <PartnersIncomeSection /> },
       { path: 'settings', element: <PartnersSettingsSection /> },
     ],
   },

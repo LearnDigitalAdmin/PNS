@@ -5,6 +5,7 @@ import { db, functions } from '../../lib/firebase';
 import { useReaderAuth } from '../context/ReaderAuthContext';
 import type { Booking, BookingStatus } from '../../bookings/types';
 import { grossUpForPaystackFee } from '../../bookings/types';
+import BookingReportModal from '../components/BookingReportModal';
 
 const initiatePaymentFn = httpsCallable<
   { bookingId: string; phone: string },
@@ -66,7 +67,10 @@ function PayBox({ booking }: { booking: Booking }) {
   );
 }
 
-function BookingRow({ booking }: { booking: Booking }) {
+function BookingRow({ booking, reporterUserId }: { booking: Booking; reporterUserId: string }) {
+  const [showReport, setShowReport] = useState(false);
+  const canReport = booking.status === 'paid' || booking.status === 'completed';
+
   return (
     <div className="border rounded-lg p-4 space-y-1.5">
       <div className="flex items-center justify-between">
@@ -83,6 +87,20 @@ function BookingRow({ booking }: { booking: Booking }) {
         </p>
       )}
       {(booking.status === 'accepted' || booking.status === 'payment_failed') && <PayBox booking={booking} />}
+
+      {canReport && (
+        <button onClick={() => setShowReport(true)} className="text-xs text-gray-500 underline pt-1">
+          Report a problem with this booking
+        </button>
+      )}
+      {showReport && (
+        <BookingReportModal
+          bookingId={booking.id}
+          photographerId={booking.photographerId}
+          reporterUserId={reporterUserId}
+          onClose={() => setShowReport(false)}
+        />
+      )}
     </div>
   );
 }
@@ -116,7 +134,7 @@ export default function BookingsSection() {
       ) : (
         <div className="space-y-3">
           {bookings.map((b) => (
-            <BookingRow key={b.id} booking={b} />
+            <BookingRow key={b.id} booking={b} reporterUserId={currentUser!.uid} />
           ))}
         </div>
       )}

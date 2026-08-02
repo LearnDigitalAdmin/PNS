@@ -1,7 +1,13 @@
 import { useEffect, useState } from 'react';
 import { collection, deleteDoc, doc, getDoc, onSnapshot, orderBy, query, updateDoc, where } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { httpsCallable } from 'firebase/functions';
+import { db, functions } from '../lib/firebase';
 import { useAdminData } from './context/AdminDataContext';
+
+const suspendPhotographerFn = httpsCallable<{ photographerId: string }, { ok: true }>(
+  functions,
+  'suspendPhotographer'
+);
 
 // Reports filed before imageUrl started being captured on the report doc
 // itself fall back to a live lookup of the gallery image, so old reports
@@ -48,14 +54,21 @@ function ReportThumbnail({ r }: { r: ReportRow }) {
 
 interface ReportRow {
   id: string;
-  targetType: 'photographer' | 'galleryImage';
+  targetType: 'photographer' | 'galleryImage' | 'booking';
   targetId: string;
   photographerId: string;
+  bookingId?: string;
   imageUrl?: string | null;
   reason: string;
   status: 'open' | 'reviewed' | 'actioned';
   createdAt: any;
 }
+
+const TARGET_TYPE_LABEL: Record<ReportRow['targetType'], string> = {
+  photographer: 'Profile report',
+  galleryImage: 'Photo report',
+  booking: 'Booking report',
+};
 
 export default function ReportsSection() {
   const { showToast, openConfirm } = useAdminData();
@@ -79,12 +92,16 @@ export default function ReportsSection() {
       isImage ? 'Remove this image?' : 'Suspend this photographer?',
       isImage
         ? 'This will permanently remove the reported portfolio image.'
-        : 'This will hide the photographer from the public directory.',
+        : "This will hide the photographer from the public directory and disable their sign-in — it won't touch their stored data.",
       async () => {
         if (isImage) {
           await deleteDoc(doc(db, 'photographers', r.photographerId, 'gallery', r.targetId));
         } else {
-          await updateDoc(doc(db, 'photographers', r.photographerId), { status: 'suspended' });
+          // Suspension now also disables the photographer's Firebase Auth
+          // account (not just the Firestore `status` field), so it has to
+          // go through a callable rather than a direct client updateDoc —
+          // see functions/src/moderation.ts.
+          await suspendPhotographerFn({ photographerId: r.photographerId });
         }
         await updateDoc(doc(db, 'reports', r.id), { status: 'actioned' });
         showToast(isImage ? 'Image removed' : 'Photographer suspended', 'danger');
@@ -113,11 +130,12 @@ export default function ReportsSection() {
               <div className="flex items-center gap-3">
                 <ReportThumbnail r={r} />
                 <div>
-                  <p style={{ fontSize: '.8rem', fontWeight: 600 }}>
-                    {r.targetType === 'photographer' ? 'Profile report' : 'Photo report'}
-                  </p>
+                  <p style={{ fontSize: '.8rem', fontWeight: 600 }}>{TARGET_TYPE_LABEL[r.targetType]}</p>
                   <p style={{ fontSize: '.72rem', color: 'var(--warm-gray)' }}>{r.reason}</p>
                   <p style={{ fontSize: '.65rem', color: 'var(--warm-gray)' }}>Photographer ID: {r.photographerId}</p>
+                  {r.targetType === 'booking' && r.bookingId && (
+                    <p style={{ fontSize: '.65rem', color: 'var(--warm-gray)' }}>Booking ID: {r.bookingId}</p>
+                  )}
                 </div>
               </div>
               {r.status === 'open' && (

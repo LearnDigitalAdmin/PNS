@@ -133,7 +133,7 @@ function formatSettlementAccountNumber(accountNumber: string, bankName: string |
  * dropdown instead of asking photographers to type a bank code from
  * memory. Mirrors the live MyRegister listBanks utility.
  */
-export const listBanks = onCall({ secrets: [PAYSTACK_SECRET_KEY] }, async () => {
+export const listBanks = onCall({ secrets: [PAYSTACK_SECRET_KEY], region: "africa-south1" }, async () => {
   const banks = await getPaystackBanks(PAYSTACK_SECRET_KEY.value());
   const mobileMoney = banks.filter((b) => /m-pesa|airtel/i.test(b.name ?? ''));
   const traditional = banks.filter((b) => !/m-pesa|airtel/i.test(b.name ?? ''));

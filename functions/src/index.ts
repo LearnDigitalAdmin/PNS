@@ -61,3 +61,9 @@ export { purchaseStorage } from "./storage-purchases";
 
 // ── Growth: referral counting ──────────────────────────────────────────────
 export { onReaderReferred } from "./referrals";
+
+// ── Trust & safety: photographer suspend/reactivate/expel ─────────────────
+// Auth-touching, so these need their own server-side admin check — see
+// assertIsAdmin() in moderation.ts — rather than relying on firestore.rules,
+// which these calls bypass entirely via the Admin SDK.
+export { suspendPhotographer, reactivatePhotographer, expelPhotographer } from "./moderation";
